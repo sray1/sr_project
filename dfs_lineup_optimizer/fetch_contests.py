@@ -5,6 +5,8 @@ Includes contest type detection (Classic vs Showdown).
 
 from draft_kings import Client, Sport
 from contest_detector import detect_contest_type
+import tempfile
+import sys
 
 
 def fetch_contests(sport="NBA"):
@@ -69,11 +71,40 @@ def fetch_draftable_players(draft_group_id, limit=10):
 
 
 if __name__ == "__main__":
-    # Fetch NBA contests
-    contests = fetch_contests(Sport.NBA)
+    # Save output to temp file
+    original_stdout = sys.stdout
 
-    # If contests found, get players from the first contest's draft group
-    if contests:
-        first_contest = contests[0]
-        print(f"Fetching players for contest: {first_contest.name}\n")
-        fetch_draftable_players(first_contest.draft_group_id)
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', prefix='dk_fetch_') as temp_file:
+        temp_path = temp_file.name
+
+        class MultiOutput:
+            def __init__(self, file1, file2):
+                self.file1 = file1
+                self.file2 = file2
+
+            def write(self, text):
+                self.file1.write(text)
+                self.file2.write(text)
+
+            def flush(self):
+                self.file1.flush()
+                self.file2.flush()
+
+        sys.stdout = MultiOutput(original_stdout, temp_file)
+
+        try:
+            # Fetch NBA contests
+            contests = fetch_contests(Sport.NBA)
+
+            # If contests found, get players from the first contest's draft group
+            if contests:
+                first_contest = contests[0]
+                print(f"Fetching players for contest: {first_contest.name}\n")
+                fetch_draftable_players(first_contest.draft_group_id)
+
+            print(f"\nResults saved to: {temp_path}")
+        finally:
+            sys.stdout = original_stdout
+
+    print(f"\nResults saved to temporary file: {temp_path}")
+    print("(This file will not be committed to git)")

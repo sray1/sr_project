@@ -4,176 +4,110 @@ DraftKings daily fantasy sports lineup prediction and optimization scripts.
 
 ## Setup
 
-No additional dependencies needed beyond the main project setup. The `draft-kings` package is already installed.
+```bash
+uv venv
+.venv\Scripts\activate
+uv sync
+```
+
+## Code Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        DraftKings API                                │
+│                    (draft_kings package)                            │
+└──────────┬──────────────┬──────────────────┬───────────────────────┘
+           │              │                  │
+           ▼              ▼                  ▼
+  ┌─────────────┐ ┌─────────────┐  ┌──────────────────┐
+  │fetch_contests│ │list_contests│  │  showdown_analyzer │
+  │     .py      │ │    .py      │  │       .py          │
+  └──────┬──────┘ └──────┬──────┘  └────────┬───────────┘
+         │               │                   │
+         ▼               ▼                   ▼
+  ┌──────────────────────────────────────────────────────┐
+  │              comprehensive_analyzer.py                │
+  │  ┌──────────────┐  ┌──────────────┐  ┌───────────┐ │
+  │  │  contest_    │  │ draftkings_  │  │    nba_    │ │
+  │  │  detector.py │  │  scoring.py   │  │ rotations │ │
+  │  └──────────────┘  └──────────────┘  └───────────┘ │
+  └──────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+1. **DraftKings API** → Fetch contests, draftable players, and draft group data
+2. **contest_detector.py** → Classifies each contest as CLASSIC or SHOWDOWN
+3. **draftkings_scoring.py** → Calculates fantasy points using official DK scoring rules
+4. **nba_rotations.py** → Provides NBA depth chart data (starters vs bench) for rotation-aware lineup filtering
+5. **comprehensive_analyzer.py** → Combines all modules to generate optimal lineups with:
+   - Injured/unavailable player filtering
+   - Player deduplication (utility salary preferred over captain salary)
+   - Salary >= $3,000 minimum for lineups
+   - Top 15 value rankings as captain candidates
+   - Multi-strategy utility selection (value-first, fppg-first, budget-aware)
+   - Captain 1.5x multiplier on both salary and fppg for showdown
 
 ## Usage
 
-### Fetch Contests
+### 1. Fetch Contests
 
-Fetch available contests for a sport:
+Fetch available NBA contests and draftable players:
 
 ```bash
 python dfs_lineup_optimizer/fetch_contests.py
 ```
 
-This will:
-- Display the first 5 available NBA/WNBA contests
-- Show contest details including type (CLASSIC/SHOWDOWN), ID, name, draft group ID, start time, and prize pool
-- Fetch and display the first 10 draftable players for the top contest
+**Output:**
+- Displays top 5 NBA/WNBA contests with type, ID, name, draft group, start time, and prize pool
+- Fetches and displays the first 10 draftable players for the top contest
+- Results automatically saved to a temp file (e.g., `C:\Users\...\AppData\Local\Temp\dk_fetch_xxx.txt`)
 
-### Comprehensive Analysis
+### 2. List Upcoming Contests
 
-Run full contest analysis with proper DK scoring rules:
-
-```bash
-python dfs_lineup_optimizer/comprehensive_analyzer.py
-```
-
-This provides:
-- **Automatic contest type detection** (Classic vs Showdown)
-- **Proper DK scoring rules** for NBA
-- **Captain multiplier handling** for showdown contests (1.5x on points and salary)
-- **Optimal lineup generation** for contest type
-- **Player value rankings** with realistic projections
-
-#### DK Scoring Rules Implemented:
-
-**Base Scoring:**
-- Points: +1.0
-- Rebounds: +1.25
-- Assists: +1.5
-- Steals: +2.0
-- Blocks: +2.0
-- Turnovers: -0.5
-- 3-Pointers Made: +0.5
-- Double-Double: +1.5
-- Triple-Double: +3.0
-
-**Showdown-Specific:**
-- 6-player roster (1 Captain + 5 UTIL)
-- Captain: 1.5x multiplier on both points AND salary
-- $50,000 salary cap
-
-**Classic-Specific:**
-- 8-player roster (PG/SG/SF/PF/C positions)
-- $50,000 salary cap
-- Standard position requirements
-
-### Projections Integration
-
-Work with projection data for lineup optimization:
-
-```bash
-python dfs_lineup_optimizer/projections.py
-```
-
-This demonstrates:
-- Creating sample projections based on draft group data
-- Merging projections with DraftKings player data
-- Finding top value plays (best points per $1k salary)
-
-#### Custom Projection Usage
-
-```python
-from dfs_lineup_optimizer.projections import ProjectionManager
-from draft_kings import Sport
-
-manager = ProjectionManager()
-
-# Load projections from CSV
-df = manager.load_from_csv('projections.csv')
-
-# Load projections from dict/list
-projections = [
-    {'player_id': '123', 'player_name': 'John Doe', 'projected_points': 45.5}
-]
-manager.load_from_dict(projections)
-
-# Get top value plays for a draft group
-top_values = manager.get_top_values(draft_group_id=148453, top_n=10)
-```
-
-#### CSV Format
-
-Projection CSV files should have these columns:
-- `player_id` - DraftKings player ID
-- `player_name` - Player full name
-- `team` - Team abbreviation (optional)
-- `position` - Player position (optional)
-- `salary` - Player salary (optional, from DK data)
-- `projected_points` - Expected fantasy points
-- `projected_value` - Points per $1k salary (calculated if not provided)
-
-See `sample_projections.csv` for an example format.
-
-### Custom Scripts
-
-You can create your own scripts using the draft-kings client:
-
-```python
-from draft_kings import Client, Sport
-
-client = Client()
-
-# Get all contests for a sport
-contests = client.contests(Sport.NBA)
-
-# Get draftable players for a specific draft group
-draftables = client.draftables(draft_group_id=148453)
-
-# Get player availability and scoring data
-players = client.available_players(draft_group_id=148453)
-```
-
-## Available Sports
-
-- `Sport.NBA` - Basketball
-- `Sport.NFL` - Football
-- `Sport.MLB` - Baseball
-- `Sport.NHL` - Hockey
-- `Sport.PGA` - Golf
-- `Sport.TENN` - Tennis
-- `Sport.MMA` - Mixed Martial Arts
-- `Sport.NASCAR` - NASCAR
-- `Sport.EPL` - English Premier League (Soccer)
-- `Sport.SOC` - Soccer
-
-## Key Concepts
-
-- **Contest ID**: Unique identifier for each individual contest
-- **Draft Group ID**: Shared identifier for contests with the same player pool/slate
-- **Salary**: Each player has a salary cost for lineups
-- **Positions**: Players have eligible positions for lineup construction
-- **Contest Types**: Classic (8-player, standard positions) vs Showdown (6-player, captain multiplier)
-- **DK Scoring Rules**: Comprehensive scoring system with bonuses and multipliers
-
-## Scripts
-
-- `fetch_contests.py` - Fetch contest and player data from DraftKings
-- `list_contests.py` - List upcoming NBA contests with entry counts (top 100 by entries)
-- `projections.py` - Projection data integration and value play analysis
-- `contest_detector.py` - Contest type detection and rules (Classic vs Showdown)
-- `draftkings_scoring.py` - DK scoring calculator with realistic stat lines
-- `comprehensive_analyzer.py` - Full contest analysis with proper rules
-- `showdown_analyzer.py` - Showdown-specific analysis with captain optimization
-- `analyze_showdown.py` - Showdown-specific analysis
-- `analyze_with_pydfs.py` - pydfs-lineup-optimizer integration
-- `analyze_with_dff.py` - Daily Fantasy Fuel style analysis
-
-### List Upcoming Contests
-
-List all upcoming NBA contests with entry counts:
+List all upcoming NBA contests ranked by entry count:
 
 ```bash
 python dfs_lineup_optimizer/list_contests.py
 ```
 
-This displays:
+**Output:**
 - Top 100 Showdown contests by entry count
 - Top 100 Classic contests by entry count
-- Contest details including ID, draft group, start time, entries, prize pool, and guarantee status
+- Contest details: ID, draft group, start time, entries, prize pool, guarantee status
 
-### Showdown Analysis
+### 3. Comprehensive Analysis (Recommended)
+
+Full contest analysis with proper DK scoring rules, rotation data, and lineup generation:
+
+```bash
+python dfs_lineup_optimizer/comprehensive_analyzer.py
+```
+
+**Output:**
+- Automatically detects the next NBA contest type (Classic or Showdown)
+- Displays DK scoring rules for the contest type
+- Generates optimal lineups with captain optimization (for Showdown)
+- Player value rankings (players under $3,000 excluded)
+- Results saved to a temp file (not committed to git)
+
+**Example output (Showdown):**
+```
+Lineup 1:
+  Captain: Keldon Johnson    SAS  $3,600  (cap: $5,400)
+    Projected: 15.2 fppg -> 22.9 fppg (with captain multiplier)
+
+  Utility Players:
+    Karl-Anthony Towns     NYK  $10,200   47.2 fppg
+    Jalen Brunson           NYK  $10,600   47.2 fppg
+    Josh Hart               NYK  $8,200    35.8 fppg
+    De'Aaron Fox             SAS  $7,600    26.5 fppg
+    OG Anunoby               NYK  $7,200    30.5 fppg
+
+  Total: 210.1 fppg, $49,200 salary
+```
+
+### 4. Showdown Analyzer
 
 Analyze the most popular NBA Showdown contest with captain optimization:
 
@@ -181,16 +115,93 @@ Analyze the most popular NBA Showdown contest with captain optimization:
 python dfs_lineup_optimizer/showdown_analyzer.py
 ```
 
-This provides:
-- Automatic selection of the showdown contest with most entries
-- Proper DK scoring rules for NBA
-- Captain optimization limited to starting players (top 8 by salary)
-- 5 optimal lineups with different captain choices
+**Output:**
+- Selects the showdown contest with the most entries
+- Generates 5 optimal lineups with captain optimization (starting players only)
 - Player value rankings with UTIL and Captain values
-- Results saved to a temporary file (not committed to git)
+- Results saved to a temp file
+
+## Scoring Rules
+
+### DK NBA Base Scoring
+
+| Stat                | Points  |
+|---------------------|---------|
+| Points              | +1.0    |
+| Rebounds             | +1.25   |
+| Assists              | +1.5    |
+| Steals               | +2.0    |
+| Blocks               | +2.0    |
+| Turnovers            | -0.5    |
+| 3-Pointers Made      | +0.5    |
+| Double-Double        | +1.5    |
+| Triple-Double        | +3.0    |
+
+### Showdown Rules
+
+- **Roster**: 6 players (1 Captain + 5 UTIL)
+- **Captain**: 1.5x multiplier on BOTH points AND salary
+- **Salary Cap**: $50,000
+- Captain salary counts as 1.5x toward the cap
+
+### Classic Rules
+
+- **Roster**: 8 players (PG/SG/SF/PF/C positions)
+- **Salary Cap**: $50,000
+- Standard position requirements
+
+## Lineup Generation Rules
+
+The comprehensive analyzer applies these rules when generating lineups:
+
+1. **Injured players filtered out** — players marked as disabled are excluded
+2. **Player deduplication** — duplicate entries (captain vs utility salaries) are merged, keeping the lower utility salary
+3. **Captain candidates** — top 15 players by value (fppg per $1k) plus any starters from rotation data
+4. **Utility minimum salary** — players under $3,000 excluded from lineups
+5. **Utility minimum fppg** — players under 5 fppg excluded from utility spots
+6. **Multi-strategy selection** — uses 3 strategies (value-first, fppg-first, budget-aware) and picks the best result
+7. **Rotation data** — starters prioritized over bench players via `nba_rotations.py`
+
+## Scripts
+
+| Script                     | Description                                              |
+|---------------------------|----------------------------------------------------------|
+| `comprehensive_analyzer.py` | Full contest analysis with all rules and lineup generation |
+| `showdown_analyzer.py`      | Showdown-specific analysis with captain optimization       |
+| `fetch_contests.py`         | Fetch contest and player data from DraftKings             |
+| `list_contests.py`          | List upcoming NBA contests ranked by entries               |
+| `contest_detector.py`       | Contest type detection and rules (Classic vs Showdown)     |
+| `draftkings_scoring.py`     | DK scoring calculator with realistic stat lines            |
+| `nba_rotations.py`          | NBA depth chart data (2025-2026 season)                    |
+| `projections.py`            | Projection data integration and value play analysis         |
+
+## Available Sports
+
+| Sport       | Enum         |
+|-------------|--------------|
+| Basketball  | `Sport.NBA`  |
+| Football    | `Sport.NFL`  |
+| Baseball    | `Sport.MLB`  |
+| Hockey      | `Sport.NHL`  |
+| Golf        | `Sport.PGA`  |
+| Tennis      | `Sport.TENN` |
+| MMA         | `Sport.MMA`  |
+| NASCAR      | `Sport.NASCAR` |
+| EPL Soccer  | `Sport.EPL`  |
+| Soccer      | `Sport.SOC`  |
+
+## Key Concepts
+
+- **Contest ID**: Unique identifier for each individual contest
+- **Draft Group ID**: Shared identifier for contests with the same player pool/slate
+- **Contest Types**: Classic (8-player, standard positions) vs Showdown (6-player, captain multiplier)
+- **Captain Multiplier**: In showdown, the captain earns 1.5x fantasy points and costs 1.5x salary
+- **Value (X)**: Fantasy points per $1,000 of salary — higher is better
+- **fppg**: Fantasy points per game based on DK scoring rules
 
 ## Notes
 
 - DraftKings does not have an official public API
 - Uses unofficial endpoints that may change without notice
 - Contest data is only available for current/upcoming slates
+- NBA rotation data in `nba_rotations.py` is based on 2025-2026 season depth charts
