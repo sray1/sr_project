@@ -5,8 +5,6 @@ Uses nba_api (free, no API key) to fetch box scores, then calculates
 DK scoring using the existing DKScoringCalculator.
 """
 
-from nba_api.stats.endpoints import boxscoretraditionalv2
-from nba_api.stats.static import teams
 from draftkings_scoring import DKScoringCalculator, PlayerStats
 from itertools import combinations
 from datetime import datetime, timezone
@@ -38,6 +36,102 @@ DK_TO_NBA_ABBR = {
     "UTA": "UTA", "WAS": "WAS",
 }
 
+# Full name mapping: nba_api nameI format -> common full name
+NBA_NAME_MAP = {
+    "V. Wembanyama": "Victor Wembanyama",
+    "S. Castle": "Stephon Castle",
+    "D. Fox": "De'Aaron Fox",
+    "D. Vassell": "Devin Vassell",
+    "J. Champagnie": "Julian Champagnie",
+    "D. Harper": "Dylan Harper",
+    "K. Johnson": "Keldon Johnson",
+    "L. Kornet": "Luke Kornet",
+    "H. Barnes": "Harrison Barnes",
+    "C. Bryant": "Carter Bryant",
+    "J. Hart": "Josh Hart",
+    "O. Anunoby": "OG Anunoby",
+    "K. Towns": "Karl-Anthony Towns",
+    "M. Bridges": "Mikal Bridges",
+    "J. Brunson": "Jalen Brunson",
+    "L. Shamet": "Landry Shamet",
+    "M. McBride": "Miles McBride",
+    "M. Robinson": "Mitchell Robinson",
+    "J. Alvarado": "Jose Alvarado",
+    "J. Clarkson": "Jordan Clarkson",
+    "A. Hukporti": "Ariel Hukporti",
+    "P. Dadiet": "Pacome Dadiet",
+    "M. Diawara": "Mohamed Diawara",
+    "T. Kolek": "Tyler Kolek",
+    "J. Sochan": "Jeremy Sochan",
+    "B. Biyombo": "Bismack Biyombo",
+    "J. McLaughlin": "Jordan McLaughlin",
+    "K. Olynyk": "Kelly Olynyk",
+    "M. Plumlee": "Mason Plumlee",
+}
+
+
+def _find_game_id(date, home_team, away_team, max_retries=3):
+    """Find NBA game ID from date and team abbreviations."""
+    from nba_api.stats.library.parameters import LeagueID
+
+    home_id = NBA_TEAM_IDS.get(home_team)
+    away_id = NBA_TEAM_IDS.get(away_team)
+
+    if home_id is None:
+        nba_abbr = DK_TO_NBA_ABBR.get(home_team)
+        if nba_abbr:
+            home_id = NBA_TEAM_IDS.get(nba_abbr)
+    if away_id is None:
+        nba_abbr = DK_TO_NBA_ABBR.get(away_team)
+        if nba_abbr:
+            away_id = NBA_TEAM_IDS.get(nba_abbr)
+
+    for attempt in range(max_retries):
+        try:
+            # Try V3 first (recommended for 2025-26+ seasons)
+            try:
+                from nba_api.stats.endpoints import scoreboardv3
+                sb = scoreboardv3.ScoreboardV3(
+                    game_date=date,
+                    league_id=LeagueID.nba
+                )
+                games_df = sb.get_data_frames()[0]
+
+                # V3 returns game info in a different format - need to find game IDs
+                # Get the scoreboard header which has game IDs
+                # Fallback to V2 for game ID lookup
+            except Exception:
+                pass
+
+            # Use V2 for game ID lookup (still works for this)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                from nba_api.stats.endpoints import scoreboardv2
+                sb = scoreboardv2.ScoreboardV2(
+                    game_date=date,
+                    league_id=LeagueID.nba
+                )
+                games = sb.get_data_frames()[0]
+
+                for _, game in games.iterrows():
+                    game_home_id = game['HOME_TEAM_ID']
+                    game_away_id = game['VISITOR_TEAM_ID']
+                    if game_home_id == home_id or game_away_id == away_id:
+                        return game['GAME_ID']
+
+            raise ValueError(f"No game found for {away_team} @ {home_team} on {date}")
+
+        except ValueError:
+            raise
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+            else:
+                raise
+
+    return None
+
 
 def fetch_box_score(game_id: str = None, date: str = None,
                    home_team: str = None, away_team: str = None,
@@ -49,7 +143,7 @@ def fetch_box_score(game_id: str = None, date: str = None,
     to find the game. Returns a dict mapping player names to PlayerStats.
 
     Args:
-        game_id: NBA game ID (e.g., '0022400001')
+        game_id: NBA game ID (e.g., '0042500401')
         date: Game date in 'YYYY-MM-DD' format
         home_team: Home team abbreviation (DK format, e.g., 'SAS')
         away_team: Away team abbreviation (DK format, e.g., 'NYK')
@@ -58,91 +152,57 @@ def fetch_box_score(game_id: str = None, date: str = None,
     Returns:
         dict: {player_name: {"stats": PlayerStats, "team": team_abbr, "minutes": float}}
     """
-    from nba_api.stats.endpoints import scoreboardv2
-    from nba_api.stats.library.parameters import LeagueID
-
     if game_id is None and (date is None or home_team is None):
         raise ValueError("Must provide either game_id or (date + home_team)")
 
     # If no game_id, find it from date and teams
     if game_id is None:
-        home_id = NBA_TEAM_IDS.get(home_team)
-        away_id = NBA_TEAM_IDS.get(away_team)
+        game_id = _find_game_id(date, home_team, away_team, max_retries)
 
-        if home_id is None:
-            # Try alternate abbreviation mapping
-            nba_abbr = DK_TO_NBA_ABBR.get(home_team)
-            if nba_abbr:
-                home_id = NBA_TEAM_IDS.get(nba_abbr)
-        if away_id is None:
-            nba_abbr = DK_TO_NBA_ABBR.get(away_team)
-            if nba_abbr:
-                away_id = NBA_TEAM_IDS.get(nba_abbr)
-
-        # Get scoreboard for the date to find the game
-        for attempt in range(max_retries):
-            try:
-                sb = scoreboardv2.ScoreboardV2(
-                    game_date=date,
-                    league_id=LeagueID.nba
-                )
-                games = sb.get_data_frames()[0]
-
-                for _, game in games.iterrows():
-                    game_home_id = game['HOME_TEAM_ID']
-                    game_away_id = game['VISITOR_TEAM_ID']
-                    if game_home_id == home_id or game_away_id == away_id:
-                        game_id = game['GAME_ID']
-                        break
-
-                if game_id is None:
-                    raise ValueError(f"No game found for {away_team} @ {home_team} on {date}")
-                break
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(1)
-                else:
-                    raise
-
-    # Fetch the box score
+    # Fetch the box score using V3 (V2 is deprecated for 2025-26 season)
     for attempt in range(max_retries):
         try:
-            box = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
-            player_stats_df = box.get_data_frames()[0]  # Player stats
+            from nba_api.stats.endpoints import boxscoretraditionalv3
+            box = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id)
+            player_stats_df = box.get_data_frames()[0]
 
             results = {}
             for _, row in player_stats_df.iterrows():
-                if row.get('MIN') is None or row['MIN'] == '' or row['MIN'] == '0':
+                # Skip players who didn't play
+                minutes = row.get('minutes', '')
+                if minutes is None or minutes == '' or str(row.get('comment', '')).startswith('DNP'):
                     continue
-
-                player_name = row['PLAYER_NAME']
-                team_abbr = row['TEAM_ABBREVIATION']
 
                 # Parse minutes
                 try:
-                    minutes_str = str(row['MIN'])
+                    minutes_str = str(minutes)
                     if ':' in minutes_str:
                         mins, secs = minutes_str.split(':')
-                        minutes = float(mins) + float(secs) / 60
+                        minutes_float = float(mins) + float(secs) / 60
                     else:
-                        minutes = float(minutes_str)
+                        minutes_float = float(minutes_str)
                 except (ValueError, AttributeError):
-                    minutes = 0.0
+                    minutes_float = 0.0
+
+                # Get player name - use nameI from nba_api, map to full name
+                short_name = row.get('nameI', '')
+                player_name = NBA_NAME_MAP.get(short_name, short_name)
+                team_abbr = row.get('teamTricode', '')
 
                 # Parse stats
                 try:
-                    pts = float(row.get('PTS', 0) or 0)
-                    reb = float(row.get('REB', 0) or 0)
-                    ast = float(row.get('AST', 0) or 0)
-                    stl = float(row.get('STL', 0) or 0)
-                    blk = float(row.get('BLK', 0) or 0)
-                    tov = float(row.get('TOV', 0) or 0)
-                    fgm = float(row.get('FGM', 0) or 0)
-                    fga = float(row.get('FGA', 0) or 0)
-                    fg3m = float(row.get('FG3M', 0) or 0)
-                    fg3a = float(row.get('FG3A', 0) or 0)
-                    ftm = float(row.get('FTM', 0) or 0)
-                    fta = float(row.get('FTA', 0) or 0)
+                    pts = float(row.get('points', 0) or 0)
+                    reb = float(row.get('reboundsTotal', 0) or 0)
+                    ast = float(row.get('assists', 0) or 0)
+                    stl = float(row.get('steals', 0) or 0)
+                    blk = float(row.get('blocks', 0) or 0)
+                    tov = float(row.get('turnovers', 0) or 0)
+                    fgm = float(row.get('fieldGoalsMade', 0) or 0)
+                    fga = float(row.get('fieldGoalsAttempted', 0) or 0)
+                    fg3m = float(row.get('threePointersMade', 0) or 0)
+                    fg3a = float(row.get('threePointersAttempted', 0) or 0)
+                    ftm = float(row.get('freeThrowsMade', 0) or 0)
+                    fta = float(row.get('freeThrowsAttempted', 0) or 0)
                 except (ValueError, TypeError):
                     continue
 
@@ -159,7 +219,7 @@ def fetch_box_score(game_id: str = None, date: str = None,
                 results[player_name] = {
                     "stats": stats,
                     "team": team_abbr,
-                    "minutes": minutes,
+                    "minutes": minutes_float,
                     "field_goals_made": fgm,
                     "field_goals_attempted": fga,
                     "three_pointers_made": fg3m,
@@ -169,6 +229,71 @@ def fetch_box_score(game_id: str = None, date: str = None,
                 }
 
             return results
+
+        except ImportError:
+            # Fall back to V2 if V3 not available
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    from nba_api.stats.endpoints import boxscoretraditionalv2
+                    box = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
+                    player_stats_df = box.get_data_frames()[0]
+
+                    results = {}
+                    for _, row in player_stats_df.iterrows():
+                        if row.get('MIN') is None or row['MIN'] == '' or row['MIN'] == '0':
+                            continue
+
+                        player_name = row['PLAYER_NAME']
+                        team_abbr = row['TEAM_ABBREVIATION']
+
+                        try:
+                            minutes_str = str(row['MIN'])
+                            if ':' in minutes_str:
+                                mins, secs = minutes_str.split(':')
+                                minutes_float = float(mins) + float(secs) / 60
+                            else:
+                                minutes_float = float(minutes_str)
+                        except (ValueError, AttributeError):
+                            minutes_float = 0.0
+
+                        try:
+                            pts = float(row.get('PTS', 0) or 0)
+                            reb = float(row.get('REB', 0) or 0)
+                            ast = float(row.get('AST', 0) or 0)
+                            stl = float(row.get('STL', 0) or 0)
+                            blk = float(row.get('BLK', 0) or 0)
+                            tov = float(row.get('TOV', 0) or 0)
+                            fgm = float(row.get('FGM', 0) or 0)
+                            fga = float(row.get('FGA', 0) or 0)
+                            fg3m = float(row.get('FG3M', 0) or 0)
+                            fg3a = float(row.get('FG3A', 0) or 0)
+                            ftm = float(row.get('FTM', 0) or 0)
+                            fta = float(row.get('FTA', 0) or 0)
+                        except (ValueError, TypeError):
+                            continue
+
+                        stats = PlayerStats(
+                            points=pts, rebounds=reb, assists=ast,
+                            steals=stl, blocks=blk, turnovers=tov,
+                            three_pointers=fg3m,
+                        )
+
+                        results[player_name] = {
+                            "stats": stats, "team": team_abbr,
+                            "minutes": minutes_float,
+                            "field_goals_made": fgm, "field_goals_attempted": fga,
+                            "three_pointers_made": fg3m, "three_pointers_attempted": fg3a,
+                            "free_throws_made": ftm, "free_throws_attempted": fta,
+                        }
+                    return results
+
+            except Exception as e2:
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                else:
+                    raise ValueError(f"Failed to fetch box score after {max_retries} retries: {e2}")
 
         except Exception as e:
             if attempt < max_retries - 1:

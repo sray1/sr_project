@@ -31,30 +31,29 @@ from nba_rotations import is_starter
 # ============================================================
 
 FALLBACK_NYK_STATS = {
-    "Jalen Brunson": {"stats": PlayerStats(points=30, rebounds=3, assists=2, steals=0, blocks=0, turnovers=3, three_pointers=2), "team": "NYK"},
+    "Jalen Brunson": {"stats": PlayerStats(points=30, rebounds=3, assists=2, steals=0, blocks=0, turnovers=4, three_pointers=2), "team": "NYK"},
     "Karl-Anthony Towns": {"stats": PlayerStats(points=18, rebounds=12, assists=4, steals=0, blocks=1, turnovers=2, three_pointers=0), "team": "NYK"},
-    "OG Anunoby": {"stats": PlayerStats(points=17, rebounds=3, assists=0, steals=1, blocks=1, turnovers=1, three_pointers=3), "team": "NYK"},
+    "OG Anunoby": {"stats": PlayerStats(points=17, rebounds=3, assists=0, steals=1, blocks=1, turnovers=0, three_pointers=3), "team": "NYK"},
     "Landry Shamet": {"stats": PlayerStats(points=13, rebounds=1, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=3), "team": "NYK"},
     "Mikal Bridges": {"stats": PlayerStats(points=9, rebounds=3, assists=3, steals=2, blocks=0, turnovers=1, three_pointers=0), "team": "NYK"},
-    "Josh Hart": {"stats": PlayerStats(points=3, rebounds=15, assists=6, steals=4, blocks=1, turnovers=2, three_pointers=0), "team": "NYK"},
-    "Miles McBride": {"stats": PlayerStats(points=6, rebounds=1, assists=4, steals=0, blocks=1, turnovers=1, three_pointers=2), "team": "NYK"},
-    "Jose Alvarado": {"stats": PlayerStats(points=7, rebounds=4, assists=1, steals=1, blocks=0, turnovers=0, three_pointers=1), "team": "NYK"},
+    "Josh Hart": {"stats": PlayerStats(points=3, rebounds=15, assists=6, steals=4, blocks=1, turnovers=0, three_pointers=0), "team": "NYK"},
+    "Miles McBride": {"stats": PlayerStats(points=6, rebounds=1, assists=4, steals=0, blocks=1, turnovers=0, three_pointers=2), "team": "NYK"},
+    "Jose Alvarado": {"stats": PlayerStats(points=7, rebounds=4, assists=1, steals=1, blocks=0, turnovers=1, three_pointers=1), "team": "NYK"},
     "Mitchell Robinson": {"stats": PlayerStats(points=2, rebounds=6, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "NYK"},
     "Jordan Clarkson": {"stats": PlayerStats(points=0, rebounds=1, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "NYK"},
-    "Ariel Hukporti": {"stats": PlayerStats(points=0, rebounds=0, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "NYK"},
 }
 
 FALLBACK_SAS_STATS = {
-    "Victor Wembanyama": {"stats": PlayerStats(points=26, rebounds=12, assists=2, steals=1, blocks=3, turnovers=4, three_pointers=2), "team": "SAS"},
+    "Victor Wembanyama": {"stats": PlayerStats(points=26, rebounds=12, assists=2, steals=1, blocks=3, turnovers=6, three_pointers=2), "team": "SAS"},
     "Stephon Castle": {"stats": PlayerStats(points=17, rebounds=8, assists=3, steals=0, blocks=0, turnovers=2, three_pointers=1), "team": "SAS"},
-    "Julian Champagnie": {"stats": PlayerStats(points=16, rebounds=9, assists=1, steals=0, blocks=0, turnovers=1, three_pointers=5), "team": "SAS"},
-    "Dylan Harper": {"stats": PlayerStats(points=16, rebounds=8, assists=1, steals=1, blocks=0, turnovers=2, three_pointers=1), "team": "SAS"},
-    "Devin Vassell": {"stats": PlayerStats(points=9, rebounds=10, assists=3, steals=0, blocks=1, turnovers=1, three_pointers=1), "team": "SAS"},
+    "Julian Champagnie": {"stats": PlayerStats(points=16, rebounds=10, assists=1, steals=0, blocks=1, turnovers=0, three_pointers=5), "team": "SAS"},
+    "Dylan Harper": {"stats": PlayerStats(points=16, rebounds=8, assists=1, steals=1, blocks=0, turnovers=1, three_pointers=1), "team": "SAS"},
+    "Devin Vassell": {"stats": PlayerStats(points=9, rebounds=9, assists=3, steals=0, blocks=0, turnovers=1, three_pointers=1), "team": "SAS"},
     "De'Aaron Fox": {"stats": PlayerStats(points=7, rebounds=4, assists=5, steals=1, blocks=0, turnovers=3, three_pointers=0), "team": "SAS"},
     "Keldon Johnson": {"stats": PlayerStats(points=3, rebounds=0, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=1), "team": "SAS"},
-    "Luke Kornet": {"stats": PlayerStats(points=0, rebounds=2, assists=1, steals=0, blocks=0, turnovers=1, three_pointers=0), "team": "SAS"},
+    "Luke Kornet": {"stats": PlayerStats(points=0, rebounds=1, assists=0, steals=1, blocks=0, turnovers=0, three_pointers=0), "team": "SAS"},
     "Carter Bryant": {"stats": PlayerStats(points=1, rebounds=0, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "SAS"},
-    "Harrison Barnes": {"stats": PlayerStats(points=0, rebounds=1, assists=1, steals=0, blocks=0, turnovers=1, three_pointers=0), "team": "SAS"},
+    "Harrison Barnes": {"stats": PlayerStats(points=0, rebounds=2, assists=1, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "SAS"},
 }
 
 FALLBACK_ALL_STATS = {**FALLBACK_NYK_STATS, **FALLBACK_SAS_STATS}
@@ -66,8 +65,8 @@ FALLBACK_SALARIES = {
     "De'Aaron Fox": 7600, "Mikal Bridges": 6600, "Devin Vassell": 6200,
     "Julian Champagnie": 5800, "Dylan Harper": 5400, "Landry Shamet": 4800,
     "Miles McBride": 4400, "Mitchell Robinson": 4000, "Keldon Johnson": 3600,
-    "Carter Bryant": 2800, "Luke Kornet": 2400, "Ariel Hukporti": 2000,
-    "Harrison Barnes": 1600, "Jordan Clarkson": 1200,
+    "Carter Bryant": 2800, "Luke Kornet": 2400, "Harrison Barnes": 1600,
+    "Jordan Clarkson": 1200,
 }
 
 # Our predicted lineups from the comprehensive analyzer run
