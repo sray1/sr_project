@@ -168,6 +168,137 @@ def generate_showdown_lineups(players: List[Player], contest_info, n_lineups=5) 
     # since high-salary captains may not fit the cap with 1.5x multiplier
     captain_candidates_by_salary = sorted(captain_candidates, key=lambda p: p.salary)
 
+    def try_fill_utils(util_players, remaining_salary, captain):
+        """
+        Try multiple strategies to fill 5 utility spots within budget.
+        Returns the best lineup (list of 5 players) or empty list if impossible.
+        """
+        best_lineup = []
+        best_fppg = 0
+
+        # Strategy 1: Greedy by value (highest value first)
+        selected = []
+        current_salary = 0
+        for player in util_players:
+            if len(selected) >= 5:
+                break
+            if current_salary + player.salary <= remaining_salary:
+                selected.append(player)
+                current_salary += player.salary
+
+        # Fill remaining spots with cheapest available
+        if len(selected) < 5:
+            by_salary = sorted([p for p in util_players if p not in selected], key=lambda p: p.salary)
+            for player in by_salary:
+                if len(selected) >= 5:
+                    break
+                if current_salary + player.salary <= remaining_salary:
+                    selected.append(player)
+                    current_salary += player.salary
+
+        if len(selected) == 5:
+            total_fppg = sum(p.fppg for p in selected)
+            if total_fppg > best_fppg:
+                best_lineup = selected[:]
+                best_fppg = total_fppg
+
+        # Strategy 2: Greedy by fppg (highest scoring first)
+        selected2 = []
+        current_salary2 = 0
+        util_by_fppg = sorted(util_players, key=lambda p: p.fppg, reverse=True)
+        for player in util_by_fppg:
+            if len(selected2) >= 5:
+                break
+            if current_salary2 + player.salary <= remaining_salary:
+                selected2.append(player)
+                current_salary2 += player.salary
+
+        if len(selected2) < 5:
+            by_salary = sorted([p for p in util_players if p not in selected2], key=lambda p: p.salary)
+            for player in by_salary:
+                if len(selected2) >= 5:
+                    break
+                if current_salary2 + player.salary <= remaining_salary:
+                    selected2.append(player)
+                    current_salary2 += player.salary
+
+        if len(selected2) == 5:
+            total_fppg2 = sum(p.fppg for p in selected2)
+            if total_fppg2 > best_fppg:
+                best_lineup = selected2[:]
+                best_fppg = total_fppg2
+
+        # Strategy 3: Budget-aware - start cheap then upgrade
+        selected3 = []
+        current_salary3 = 0
+        cheapest = sorted(util_players, key=lambda p: p.salary)
+        for player in cheapest:
+            if len(selected3) >= 5:
+                break
+            if current_salary3 + player.salary <= remaining_salary:
+                selected3.append(player)
+                current_salary3 += player.salary
+
+        # Upgrade each slot with higher-fppg players
+        for i in range(len(selected3)):
+            current = selected3[i]
+            for player in util_players:
+                if player not in selected3 and player.id != captain.id:
+                    new_total = current_salary3 - current.salary + player.salary
+                    if new_total <= remaining_salary and player.fppg > current.fppg:
+                        selected3[i] = player
+                        current_salary3 = new_total
+                        break
+
+        if len(selected3) == 5:
+            total_fppg3 = sum(p.fppg for p in selected3)
+            if total_fppg3 > best_fppg:
+                best_lineup = selected3[:]
+                best_fppg = total_fppg3
+
+        # Strategy 4: Drop most expensive to make room for 2 cheaper players
+        # Try removing the most expensive player from Strategy 1 and filling with
+        # cheaper options that fit under the cap
+        if len(selected) == 4:
+            # We have 4 players, need a 5th. Try every eligible player that fits.
+            used_ids = {p.id for p in selected}
+            budget_left = remaining_salary - current_salary
+            for player in sorted(util_players, key=lambda p: p.fppg, reverse=True):
+                if player.id not in used_ids and player.salary <= budget_left:
+                    candidate = selected + [player]
+                    total_fppg = sum(p.fppg for p in candidate)
+                    if total_fppg > best_fppg:
+                        best_lineup = candidate[:]
+                        best_fppg = total_fppg
+                    break
+
+        # Strategy 5: For each picked player, try swapping for a cheaper one
+        # to free up budget for a 5th player
+        if len(best_lineup) < 5 and len(selected) >= 4:
+            for i in range(len(selected)):
+                swapped = selected[:]
+                budget_after_remove = remaining_salary - current_salary + selected[i].salary
+                # Find cheapest eligible replacement
+                for player in sorted(util_players, key=lambda p: p.salary):
+                    if player.id not in {p.id for p in selected} and player.id != captain.id:
+                        if player.salary < selected[i].salary:
+                            remaining_after_swap = remaining_salary - (current_salary - selected[i].salary + player.salary)
+                            # Now try to fill 5th spot
+                            used_ids = {p.id for p in swapped}
+                            used_ids.discard(selected[i].id)
+                            used_ids.add(player.id)
+                            for fifth in sorted(util_players, key=lambda p: p.fppg, reverse=True):
+                                if fifth.id not in used_ids and fifth.salary <= remaining_after_swap:
+                                    candidate = selected[:i] + [player] + selected[i+1:] + [fifth]
+                                    total_fppg = sum(p.fppg for p in candidate)
+                                    if total_fppg > best_fppg:
+                                        best_lineup = candidate[:]
+                                        best_fppg = total_fppg
+                                    break
+                            break
+
+        return best_lineup
+
     # Generate lineups with different captain choices
     valid_lineups = 0
     for captain in captain_candidates_by_salary:
@@ -175,7 +306,6 @@ def generate_showdown_lineups(players: List[Player], contest_info, n_lineups=5) 
             break
 
         # In showdown, captain salary counts as 1.5 spots in salary cap calculation
-        # remaining_salary = 50000 - (captain.salary * 1.5)
         remaining_salary = 50000 - (captain.salary * 1.5)
 
         # Select 5 utility players (excluding captain)
@@ -187,111 +317,26 @@ def generate_showdown_lineups(players: List[Player], contest_info, n_lineups=5) 
         # Filter out players under $3000 from utility spots
         util_players = [p for p in util_players if p.salary >= 3000]
 
-        # Sort utility players by value (descending) then pick best that fit budget
-        # Use a greedy approach that maximizes total fppg within salary constraint
+        # Sort utility players by value (descending)
         util_players.sort(key=lambda p: p.fppg / (p.salary / 1000), reverse=True)
 
-        # First try: greedy by value
-        best_lineup = []
-        best_fppg = 0
+        selected_utils = try_fill_utils(util_players, remaining_salary, captain)
 
-        # Strategy 1: Greedy by value (highest value first)
-        selected_utils = []
-        current_salary = 0
-        for player in util_players:
-            if len(selected_utils) >= 5:
-                break
-            if current_salary + player.salary <= remaining_salary:
-                selected_utils.append(player)
-                current_salary += player.salary
-
-        # If we don't have 5, fill with cheapest available
-        if len(selected_utils) < 5:
-            remaining = [p for p in util_players if p not in selected_utils]
-            remaining.sort(key=lambda p: p.salary)
-            for player in remaining:
-                if len(selected_utils) >= 5:
-                    break
-                if current_salary + player.salary <= remaining_salary:
-                    selected_utils.append(player)
-                    current_salary += player.salary
-
+        # Only add lineup if we have exactly 5 utility players
         if len(selected_utils) == 5:
-            total_fppg = sum(p.fppg for p in selected_utils)
-            if total_fppg > best_fppg:
-                best_lineup = selected_utils[:]
-                best_fppg = total_fppg
+            total_salary = (captain.salary * 1.5) + sum(p.salary for p in selected_utils)
 
-        # Strategy 2: Greedy by fppg (highest scoring first), filling all 5 spots
-        selected_utils2 = []
-        current_salary2 = 0
-        util_by_fppg = sorted(util_players, key=lambda p: p.fppg, reverse=True)
-        for player in util_by_fppg:
-            if len(selected_utils2) >= 5:
-                break
-            if current_salary2 + player.salary <= remaining_salary:
-                selected_utils2.append(player)
-                current_salary2 += player.salary
-
-        if len(selected_utils2) < 5:
-            remaining = [p for p in util_players if p not in selected_utils2]
-            remaining.sort(key=lambda p: p.salary)
-            for player in remaining:
-                if len(selected_utils2) >= 5:
-                    break
-                if current_salary2 + player.salary <= remaining_salary:
-                    selected_utils2.append(player)
-                    current_salary2 += player.salary
-
-        if len(selected_utils2) == 5:
-            total_fppg2 = sum(p.fppg for p in selected_utils2)
-            if total_fppg2 > best_fppg:
-                best_lineup = selected_utils2[:]
-                best_fppg = total_fppg2
-
-        # Strategy 3: Budget-aware - start with cheap players then upgrade
-        selected_utils3 = []
-        current_salary3 = 0
-        cheapest = sorted(util_players, key=lambda p: p.salary)
-        for player in cheapest:
-            if len(selected_utils3) >= 5:
-                break
-            if current_salary3 + player.salary <= remaining_salary:
-                selected_utils3.append(player)
-                current_salary3 += player.salary
-
-        # Now try to upgrade each slot with higher-fppg players
-        for i, current in enumerate(selected_utils3):
-            for player in util_players:
-                if player not in selected_utils3 and player.id != captain.id:
-                    new_salary = current_salary3 - current.salary + player.salary
-                    if new_salary <= remaining_salary and player.fppg > current.fppg:
-                        selected_utils3[i] = player
-                        current_salary3 = new_salary
-                        break
-
-        if len(selected_utils3) == 5:
-            total_fppg3 = sum(p.fppg for p in selected_utils3)
-            if total_fppg3 > best_fppg:
-                best_lineup = selected_utils3[:]
-                best_fppg = total_fppg3
-
-        selected_utils = best_lineup
-
-        # Calculate total salary (captain 1.5x + utilities)
-        total_salary = (captain.salary * 1.5) + sum(p.salary for p in selected_utils)
-
-        # Only add lineup if it stays within salary cap and has 5 players
-        if total_salary <= 50000 and len(selected_utils) >= 5:
-            lineup = {
-                'captain': captain,
-                'utility': selected_utils,
-                'total_fppg': captain.fppg * 1.5 + sum(p.fppg for p in selected_utils),
-                'total_salary': total_salary,
-                'captain_cap_salary': captain.salary * 1.5
-            }
-            lineups.append(lineup)
-            valid_lineups += 1
+            # Double-check salary cap
+            if total_salary <= 50000:
+                lineup = {
+                    'captain': captain,
+                    'utility': selected_utils,
+                    'total_fppg': captain.fppg * 1.5 + sum(p.fppg for p in selected_utils),
+                    'total_salary': total_salary,
+                    'captain_cap_salary': captain.salary * 1.5
+                }
+                lineups.append(lineup)
+                valid_lineups += 1
 
     return lineups
 
