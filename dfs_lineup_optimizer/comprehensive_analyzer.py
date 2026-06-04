@@ -11,6 +11,7 @@ from contest_detector import (
 )
 from draftkings_scoring import DKScoringCalculator, REALISTIC_STAT_LINES, PlayerStats
 from nba_rotations import get_rotation_status, is_starter, NBA_ROTATIONS
+from db import init_db, save_game, save_player_performance, save_lineup
 import tempfile
 import sys
 from datetime import datetime, timezone
@@ -433,6 +434,75 @@ def main():
     for i, (player, value) in enumerate(player_values[:15], 1):
         pos_str = '/'.join(player.positions)
         print(f"{i:3}. {player.full_name:25} {pos_str:8} ${player.salary:>6,}  {player.fppg:6.1f} fppg ({value:.1f}X)")
+
+    # Save predictions to database for later tracking
+    try:
+        init_db()
+
+        # Parse contest name for teams (e.g., "NBA Showdown ... (NYK @ SAS)")
+        import re
+        team_match = re.search(r'\(([A-Z]{3})\s*@\s*([A-Z]{3})\)', contest.name)
+        away_team = team_match.group(1) if team_match else "UNK"
+        home_team = team_match.group(2) if team_match else "UNK"
+
+        game_id = save_game(
+            date=start_time.strftime('%Y-%m-%d'),
+            away_team=away_team,
+            home_team=home_team,
+            contest_name=contest.name,
+            contest_type=contest_type_str
+        )
+        print(f"  [DB] Saved game: {away_team} @ {home_team} (id={game_id})")
+
+        # Save player projections (no actual fppg yet - that comes from prediction_tracker)
+        saved_count = 0
+        for player in players:
+            if player.salary >= 3000:
+                starter = is_starter(player.full_name, player.team)
+                save_player_performance(
+                    game_id=game_id,
+                    player_name=player.full_name,
+                    team=player.team,
+                    salary=int(player.salary),
+                    projected_fppg=player.fppg,
+                    is_starter=starter
+                )
+                saved_count += 1
+        print(f"  [DB] Saved {saved_count} player projections")
+
+        # Save predicted lineups (no actual scores yet)
+        if contest_type_str == "showdown":
+            for i, lineup in enumerate(lineups, 1):
+                captain = lineup['captain']
+                captain_proj = captain.fppg * 1.5
+                total_projected = lineup['total_fppg']
+                total_salary = lineup['total_salary']
+
+                utility_players = []
+                for util in lineup['utility']:
+                    utility_players.append({
+                        "name": util.full_name,
+                        "salary": int(util.salary),
+                        "projected": util.fppg,
+                        "actual": None
+                    })
+
+                save_lineup(
+                    game_id=game_id,
+                    lineup_type="predicted",
+                    rank=i,
+                    captain_name=captain.full_name,
+                    captain_salary=int(captain.salary),
+                    captain_projected=captain_proj,
+                    total_projected=total_projected,
+                    total_salary=total_salary,
+                    utility_players=utility_players
+                )
+            print(f"  [DB] Saved {len(lineups)} predicted lineups")
+
+        print(f"\n  Tip: Run prediction_tracker.py after the game to compare against actual results!")
+    except Exception as e:
+        print(f"  [DB] Warning: Could not save to database: {e}")
 
     print("\n" + "=" * 70)
     print("ANALYSIS COMPLETE")

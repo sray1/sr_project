@@ -31,6 +31,15 @@ uv sync
   │  │  contest_    │  │ draftkings_  │  │    nba_    │ │
   │  │  detector.py │  │  scoring.py   │  │ rotations │ │
   │  └──────────────┘  └──────────────┘  └───────────┘ │
+  └──────────────────────┬───────────────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────────────┐
+  │               prediction_tracker.py                   │
+  │  ┌──────────────┐  ┌──────────────┐  ┌───────────┐ │
+  │  │ game_results │  │     db.py    │  │draftkings_ │ │
+  │  │     .py      │  │  (SQLite)    │  │ scoring.py │ │
+  │  └──────────────┘  └──────────────┘  └───────────┘ │
   └──────────────────────────────────────────────────────┘
 ```
 
@@ -162,14 +171,57 @@ The comprehensive analyzer applies these rules when generating lineups:
 6. **Multi-strategy selection** — uses 3 strategies (value-first, fppg-first, budget-aware) and picks the best result
 7. **Rotation data** — starters prioritized over bench players via `nba_rotations.py`
 
+## Prediction Tracking
+
+After generating lineups with the comprehensive analyzer, use `prediction_tracker.py` to compare predictions against actual game results and track accuracy over time. All results are saved to a SQLite database (`dfs_results.db`) for historical tracking.
+
+### Run Prediction Tracker
+
+```bash
+# Default: run tracker for NYK @ SAS game
+python dfs_lineup_optimizer/prediction_tracker.py
+
+# Custom game
+python dfs_lineup_optimizer/prediction_tracker.py --away BOS --home MIA --date 2026-06-10
+
+# View past game tracking history
+python dfs_lineup_optimizer/prediction_tracker.py --history
+
+# View accuracy summary across all tracked games
+python dfs_lineup_optimizer/prediction_tracker.py --summary
+
+# View a specific player's projection accuracy over time
+python dfs_lineup_optimizer/prediction_tracker.py --player "Josh Hart"
+```
+
+### What Gets Tracked
+
+- **Game results**: Date, teams, contest type
+- **Player performances**: Projected fppg vs actual fppg for every player, with starter/bench designation
+- **Predicted lineups**: All generated lineups with captain + utilities, projected and actual totals
+- **Best possible lineups**: Theoretical optimal lineup within salary cap (for efficiency comparison)
+
+### Database Schema
+
+| Table | Purpose |
+|-------|---------|
+| `games` | One row per tracked contest (date, teams, contest type) |
+| `player_performances` | Per-player projected vs actual fppg per game |
+| `lineups` | Predicted and best-possible lineups with scores |
+
+The database file (`dfs_results.db`) is stored in the `dfs_lineup_optimizer/` directory and excluded from git via `.gitignore`.
+
 ## Scripts
 
 | Script                     | Description                                              |
 |---------------------------|----------------------------------------------------------|
 | `comprehensive_analyzer.py` | Full contest analysis with all rules and lineup generation |
+| `prediction_tracker.py`     | Compare predictions to actual results, track accuracy over time |
 | `showdown_analyzer.py`      | Showdown-specific analysis with captain optimization       |
 | `fetch_contests.py`         | Fetch contest and player data from DraftKings             |
 | `list_contests.py`          | List upcoming NBA contests ranked by entries               |
+| `game_results.py`           | Fetch NBA box scores via nba_api and calculate actual DK points |
+| `db.py`                     | SQLite database module for tracking results over time       |
 | `contest_detector.py`       | Contest type detection and rules (Classic vs Showdown)     |
 | `draftkings_scoring.py`     | DK scoring calculator with realistic stat lines            |
 | `nba_rotations.py`          | NBA depth chart data (2025-2026 season)                    |

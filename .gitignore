@@ -220,3 +220,4 @@ __marimo__/
 # DFS temporary analysis files
 dfs_analysis_*.txt
 dfs_showdown_analysis.txt
+*.db
