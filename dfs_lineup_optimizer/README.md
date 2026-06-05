@@ -48,77 +48,20 @@ uv sync
 1. **DraftKings API** → Fetch contests, draftable players, and draft group data
 2. **contest_detector.py** → Classifies each contest as CLASSIC or SHOWDOWN
 3. **draftkings_scoring.py** → Calculates fantasy points using official DK scoring rules
-4. **nba_rotations.py** → Provides NBA depth chart data (starters vs bench) for rotation-aware lineup filtering
-5. **comprehensive_analyzer.py** → Combines all modules to generate optimal lineups with:
-   - Injured/unavailable player filtering
-   - Player deduplication (utility salary preferred over captain salary)
-   - Salary >= $3,000 minimum for lineups
-   - Top 15 value rankings as captain candidates
-   - Multi-strategy utility selection (value-first, fppg-first, budget-aware)
-   - Captain 1.5x multiplier on both salary and fppg for showdown
+4. **nba_rotations.py** → NBA depth charts + actual last-15-games MPG for rotation-aware analysis
+5. **showdown_analyzer.py** → Main pipeline: finds highest-entry contest, deduplicates CPT/UTIL entries, generates lineups with:
+   - Player deduplication (keeps base UTIL salary, drops CPT 1.5x duplicates)
+   - Minutes-prioritized value rankings using last-15-games MPG
+   - Starters-only captain selection
+   - Salary cap enforcement ($50,000)
+   - Role-separated rankings (Starters / Rotation / Deep Bench)
+6. **comprehensive_analyzer.py** → Alternative analyzer with pydfs optimizer for classic contests
 
 ## Usage
 
-### 1. Fetch Contests
+### 1. Showdown Analyzer (Recommended)
 
-Fetch available NBA contests and draftable players:
-
-```bash
-python dfs_lineup_optimizer/fetch_contests.py
-```
-
-**Output:**
-- Displays top 5 NBA/WNBA contests with type, ID, name, draft group, start time, and prize pool
-- Fetches and displays the first 10 draftable players for the top contest
-- Results automatically saved to a temp file (e.g., `C:\Users\...\AppData\Local\Temp\dk_fetch_xxx.txt`)
-
-### 2. List Upcoming Contests
-
-List all upcoming NBA contests ranked by entry count:
-
-```bash
-python dfs_lineup_optimizer/list_contests.py
-```
-
-**Output:**
-- Top 100 Showdown contests by entry count
-- Top 100 Classic contests by entry count
-- Contest details: ID, draft group, start time, entries, prize pool, guarantee status
-
-### 3. Comprehensive Analysis (Recommended)
-
-Full contest analysis with proper DK scoring rules, rotation data, and lineup generation:
-
-```bash
-python dfs_lineup_optimizer/comprehensive_analyzer.py
-```
-
-**Output:**
-- Automatically detects the next NBA contest type (Classic or Showdown)
-- Displays DK scoring rules for the contest type
-- Generates optimal lineups with captain optimization (for Showdown)
-- Player value rankings (players under $3,000 excluded)
-- Results saved to a temp file (not committed to git)
-
-**Example output (Showdown):**
-```
-Lineup 1:
-  Captain: Keldon Johnson    SAS  $3,600  (cap: $5,400)
-    Projected: 15.2 fppg -> 22.9 fppg (with captain multiplier)
-
-  Utility Players:
-    Karl-Anthony Towns     NYK  $10,200   47.2 fppg
-    Jalen Brunson           NYK  $10,600   47.2 fppg
-    Josh Hart               NYK  $8,200    35.8 fppg
-    De'Aaron Fox             SAS  $7,600    26.5 fppg
-    OG Anunoby               NYK  $7,200    30.5 fppg
-
-  Total: 210.1 fppg, $49,200 salary
-```
-
-### 4. Showdown Analyzer
-
-Analyze the most popular NBA Showdown contest with captain optimization:
+Analyze the most popular NBA Showdown contest with captain optimization, minutes-prioritized rankings, and starter-only captains:
 
 ```bash
 python dfs_lineup_optimizer/showdown_analyzer.py
@@ -126,9 +69,47 @@ python dfs_lineup_optimizer/showdown_analyzer.py
 
 **Output:**
 - Selects the showdown contest with the most entries
-- Generates 5 optimal lineups with captain optimization (starting players only)
-- Player value rankings with UTIL and Captain values
-- Results saved to a temp file
+- Deduplicates CPT/UTIL player entries (keeps base salary)
+- Generates 5 optimal lineups with **starters-only** captains
+- Player value rankings sorted by adjusted value (minutes-weighted)
+- Role-separated views: Starters (30+ min), Rotation (18-25 min), Deep Bench (<10 min)
+- Captain optimization analysis prioritizing starters by adjusted value
+- Results saved to `dfs_lineup_optimizer/output/`
+
+### 2. Fetch Contests
+
+```bash
+python dfs_lineup_optimizer/fetch_contests.py
+```
+
+### 3. List Upcoming Contests
+
+```bash
+python dfs_lineup_optimizer/list_contests.py
+```
+
+### 4. Comprehensive Analysis
+
+```bash
+python dfs_lineup_optimizer/comprehensive_analyzer.py
+```
+
+### 5. Prediction Tracking
+
+```bash
+# Default: run tracker for NYK @ SAS game
+python dfs_lineup_optimizer/prediction_tracker.py
+
+# Custom game
+python dfs_lineup_optimizer/prediction_tracker.py --away BOS --home MIA --date 2026-06-10
+
+# View history or summary
+python dfs_lineup_optimizer/prediction_tracker.py --history
+python dfs_lineup_optimizer/prediction_tracker.py --summary
+
+# Specific player accuracy
+python dfs_lineup_optimizer/prediction_tracker.py --player "Josh Hart"
+```
 
 ## Scoring Rules
 
@@ -151,96 +132,52 @@ python dfs_lineup_optimizer/showdown_analyzer.py
 - **Roster**: 6 players (1 Captain + 5 UTIL)
 - **Captain**: 1.5x multiplier on BOTH points AND salary
 - **Salary Cap**: $50,000
-- Captain salary counts as 1.5x toward the cap
 
 ### Classic Rules
 
 - **Roster**: 8 players (PG/SG/SF/PF/C positions)
 - **Salary Cap**: $50,000
-- Standard position requirements
+
+## Minutes & Value System
+
+The showdown analyzer uses a **minutes-prioritized value system**:
+
+- **Actual MPG**: Last-15-games minutes per game from Basketball-Reference/LandOfBasketball (for NYK/SAS players in tonight's game)
+- **Role-based estimates**: For other teams, minutes are estimated from rotation role (starters ~33 min, rotation ~21 min, bench ~8 min) with salary-based adjustments for star starters
+- **Adjusted Value** = `raw_value × (0.4 + 0.6 × minutes_weight)` — starters with high minutes get full weight, low-minute bench players get heavily discounted
+- **Captain candidates**: Starters only (highest floor & ceiling for the captain 1.5x multiplier)
 
 ## Lineup Generation Rules
 
-The comprehensive analyzer applies these rules when generating lineups:
+1. **CPT/UTIL deduplication** — DK lists each player twice (CPT at 1.5x salary, UTIL at base salary); keep the UTIL entry
+2. **Injured players filtered out**
+3. **Captain candidates** — starters only, sorted by adjusted value
+4. **Salary cap enforced** — all lineups validated to be under $50,000
+5. **Rotation data** — starters prioritized via `nba_rotations.py`
 
-1. **Injured players filtered out** — players marked as disabled are excluded
-2. **Player deduplication** — duplicate entries (captain vs utility salaries) are merged, keeping the lower utility salary
-3. **Captain candidates** — top 15 players by value (fppg per $1k) plus any starters from rotation data
-4. **Utility minimum salary** — players under $3,000 excluded from lineups
-5. **Utility minimum fppg** — players under 5 fppg excluded from utility spots
-6. **Multi-strategy selection** — uses 3 strategies (value-first, fppg-first, budget-aware) and picks the best result
-7. **Rotation data** — starters prioritized over bench players via `nba_rotations.py`
+## Output
 
-## Prediction Tracking
+Results are saved to `dfs_lineup_optimizer/output/` with timestamps. Example filename:
 
-After generating lineups with the comprehensive analyzer, use `prediction_tracker.py` to compare predictions against actual game results and track accuracy over time. All results are saved to a SQLite database (`dfs_results.db`) for historical tracking.
-
-### Run Prediction Tracker
-
-```bash
-# Default: run tracker for NYK @ SAS game
-python dfs_lineup_optimizer/prediction_tracker.py
-
-# Custom game
-python dfs_lineup_optimizer/prediction_tracker.py --away BOS --home MIA --date 2026-06-10
-
-# View past game tracking history
-python dfs_lineup_optimizer/prediction_tracker.py --history
-
-# View accuracy summary across all tracked games
-python dfs_lineup_optimizer/prediction_tracker.py --summary
-
-# View a specific player's projection accuracy over time
-python dfs_lineup_optimizer/prediction_tracker.py --player "Josh Hart"
 ```
-
-### What Gets Tracked
-
-- **Game results**: Date, teams, contest type
-- **Player performances**: Projected fppg vs actual fppg for every player, with starter/bench designation
-- **Predicted lineups**: All generated lineups with captain + utilities, projected and actual totals
-- **Best possible lineups**: Theoretical optimal lineup within salary cap (for efficiency comparison)
-
-### Database Schema
-
-| Table | Purpose |
-|-------|---------|
-| `games` | One row per tracked contest (date, teams, contest type) |
-| `player_performances` | Per-player projected vs actual fppg per game |
-| `lineups` | Predicted and best-possible lineups with scores |
-
-The database file (`dfs_results.db`) is stored in the `dfs_lineup_optimizer/` directory and excluded from git via `.gitignore`.
+nba_showdown_2026-06-04_230752.txt
+```
 
 ## Scripts
 
 | Script                     | Description                                              |
 |---------------------------|----------------------------------------------------------|
+| `showdown_analyzer.py`      | Showdown analysis with captain optimization, minutes-prioritized rankings |
 | `comprehensive_analyzer.py` | Full contest analysis with all rules and lineup generation |
 | `prediction_tracker.py`     | Compare predictions to actual results, track accuracy over time |
-| `showdown_analyzer.py`      | Showdown-specific analysis with captain optimization       |
 | `fetch_contests.py`         | Fetch contest and player data from DraftKings             |
 | `list_contests.py`          | List upcoming NBA contests ranked by entries               |
 | `game_results.py`           | Fetch NBA box scores via nba_api and calculate actual DK points |
 | `db.py`                     | SQLite database module for tracking results over time       |
 | `contest_detector.py`       | Contest type detection and rules (Classic vs Showdown)     |
 | `draftkings_scoring.py`     | DK scoring calculator with realistic stat lines            |
-| `nba_rotations.py`          | NBA depth chart data (2025-2026 season)                    |
+| `nba_rotations.py`          | NBA depth charts + last-15-games MPG (2025-26 season)      |
 | `projections.py`            | Projection data integration and value play analysis         |
-
-## Available Sports
-
-| Sport       | Enum         |
-|-------------|--------------|
-| Basketball  | `Sport.NBA`  |
-| Football    | `Sport.NFL`  |
-| Baseball    | `Sport.MLB`  |
-| Hockey      | `Sport.NHL`  |
-| Golf        | `Sport.PGA`  |
-| Tennis      | `Sport.TENN` |
-| MMA         | `Sport.MMA`  |
-| NASCAR      | `Sport.NASCAR` |
-| EPL Soccer  | `Sport.EPL`  |
-| Soccer      | `Sport.SOC`  |
 
 ## Key Concepts
 
@@ -250,6 +187,8 @@ The database file (`dfs_results.db`) is stored in the `dfs_lineup_optimizer/` di
 - **Captain Multiplier**: In showdown, the captain earns 1.5x fantasy points and costs 1.5x salary
 - **Value (X)**: Fantasy points per $1,000 of salary — higher is better
 - **fppg**: Fantasy points per game based on DK scoring rules
+- **Adjusted Value**: Minutes-weighted value that discounts low-minute players for DFS reliability
+- **MPG**: Actual minutes per game from last 15 games (playoffs); `est` = role-based estimate for other teams
 
 ## Notes
 
@@ -257,3 +196,5 @@ The database file (`dfs_results.db`) is stored in the `dfs_lineup_optimizer/` di
 - Uses unofficial endpoints that may change without notice
 - Contest data is only available for current/upcoming slates
 - NBA rotation data in `nba_rotations.py` is based on 2025-2026 season depth charts
+- MPG data sourced from Basketball-Reference and LandOfBasketball
+- Output files are saved to `dfs_lineup_optimizer/output/` and excluded from git

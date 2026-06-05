@@ -1,6 +1,7 @@
 """
-NBA depth chart and rotation data for 2025-2026 season.
-Extracted from Hoops Distillery depth charts.
+NBA depth chart, rotation data, and minutes per game for 2025-2026 season.
+Rotation data from Hoops Distillery depth charts.
+MPG from last 15 games (playoffs) via LandOfBasketball, ESPN, StatMuse — more DFS-relevant than season averages.
 """
 
 NBA_ROTATIONS = {
@@ -102,7 +103,7 @@ NBA_ROTATIONS = {
     "NYK": {
         "name": "New York Knicks",
         "starting": ["Jalen Brunson", "Mikal Bridges", "Josh Hart", "OG Anunoby", "Karl-Anthony Towns"],
-        "rotation": ["Miles McBride", "Jose Alvarado", "Tyler Kolek", "Jordan Clarkson", "Mohamed Diawara", "Kevin McCullar", "Jeremy Sochan", "Pacome Dadiet", "Mitchell Robinson", "Ariel Hukporti"]
+        "rotation": ["Miles McBride", "Landry Shamet", "Jordan Clarkson", "Mitchell Robinson", "Jose Alvarado", "Tyler Kolek", "Guerschon Yabusele"]
     },
     "OKC": {
         "name": "Oklahoma City Thunder",
@@ -137,7 +138,7 @@ NBA_ROTATIONS = {
     "SAS": {
         "name": "San Antonio Spurs",
         "starting": ["De'Aaron Fox", "Stephon Castle", "Devin Vassell", "Julian Champagnie", "Victor Wembanyama"],
-        "rotation": ["Dylan Harper", "Jordan McLaughlin", "Keldon Johnson", "Carter Bryant", "Harrison Barnes", "Kelly Olynyk", "Luke Kornet", "Mason Plumlee"]
+        "rotation": ["Dylan Harper", "Keldon Johnson", "Luke Kornet", "Carter Bryant"]
     },
     "TOR": {
         "name": "Toronto Raptors",
@@ -154,6 +155,79 @@ NBA_ROTATIONS = {
         "starting": ["Trae Young", "Tre Johnson", "Kyshawn George", "Justin Champagnie", "Alex Sarr"],
         "rotation": ["Bub Carrington", "Sharife Cooper", "Will Riley", "Jaden Hardy", "Cam Whitmore", "Jamir Watkins", "Bilal Coulibaly", "Anthony Gill", "Tristan Vukcevic"]
     }
+}
+
+# Minutes per game over the LAST 15 GAMES (playoffs / late season).
+# More relevant for DFS than season averages — reflects current usage and rotations.
+# Sources: LandOfBasketball, ESPN, StatMuse.
+# Keyed by (team_abbr, player_name) for precise lookup.
+ACTUAL_MPG = {
+    # ── New York Knicks (last 15 games, playoffs) ──
+    ("NYK", "Jalen Brunson"): 36.2,
+    ("NYK", "OG Anunoby"): 33.6,
+    ("NYK", "Josh Hart"): 32.6,
+    ("NYK", "Mikal Bridges"): 31.5,
+    ("NYK", "Karl-Anthony Towns"): 30.5,
+    ("NYK", "Miles McBride"): 19.1,
+    ("NYK", "Landry Shamet"): 14.8,
+    ("NYK", "Mitchell Robinson"): 14.1,
+    ("NYK", "Jordan Clarkson"): 11.4,
+    ("NYK", "Jose Alvarado"): 8.6,
+    ("NYK", "Ariel Hukporti"): 8.8,
+    ("NYK", "Tyler Kolek"): 6.6,
+    ("NYK", "Pacome Dadiet"): 5.7,
+    ("NYK", "Mohamed Diawara"): 7.2,
+    ("NYK", "Kevin McCullar Jr."): 5.5,
+    ("NYK", "Jeremy Sochan"): 4.6,
+    ("NYK", "Guerschon Yabusele"): 4.6,
+
+    # ── San Antonio Spurs (last 15+ games, playoffs) ──
+    ("SAS", "Devin Vassell"): 33.9,
+    ("SAS", "Stephon Castle"): 33.5,
+    ("SAS", "De'Aaron Fox"): 32.9,
+    ("SAS", "Victor Wembanyama"): 32.8,
+    ("SAS", "Julian Champagnie"): 30.5,
+    ("SAS", "Dylan Harper"): 25.7,
+    ("SAS", "Keldon Johnson"): 18.1,
+    ("SAS", "Luke Kornet"): 13.9,
+    ("SAS", "Carter Bryant"): 9.4,
+    ("SAS", "Harrison Barnes"): 9.4,
+    ("SAS", "Kelly Olynyk"): 3.9,
+    ("SAS", "Jordan McLaughlin"): 4.6,
+    ("SAS", "Bismack Biyombo"): 2.8,
+    ("SAS", "Mason Plumlee"): 3.0,
+    ("SAS", "Lindy Waters III"): 3.8,
+
+    # ── Top league MPG leaders (season, for other teams) ──
+    ("PHI", "Tyrese Maxey"): 38.0,
+    ("HOU", "Amen Thompson"): 37.4,
+    ("HOU", "Kevin Durant"): 36.4,
+    ("LAL", "Luka Doncic"): 35.8,
+    ("NOP", "Trey Murphy"): 35.5,
+    ("DEN", "Jamal Murray"): 35.4,
+    ("ATL", "Jalen Johnson"): 35.2,
+    ("HOU", "Jabari Smith"): 35.1,
+    ("MIN", "Anthony Edwards"): 35.0,
+    ("PHI", "VJ Edgecombe"): 35.0,
+    ("CLE", "James Harden"): 34.8,
+    ("DEN", "Nikola Jokic"): 34.8,
+    ("ORL", "Paolo Banchero"): 34.8,
+    ("BOS", "Jaylen Brown"): 34.4,
+    ("BOS", "Derrick White"): 34.1,
+    ("DET", "Cade Cunningham"): 33.9,
+    ("TOR", "Brandon Ingram"): 33.8,
+    ("ORL", "Desmond Bane"): 33.6,
+    ("PHX", "Devin Booker"): 33.5,
+    ("CLE", "Donovan Mitchell"): 33.5,
+    ("TOR", "Scottie Barnes"): 33.5,
+    ("DAL", "Cooper Flagg"): 33.5,
+    ("ATL", "N. Alexander-Walker"): 33.4,
+    ("POR", "Deni Avdija"): 33.3,
+    ("HOU", "Alperen Sengun"): 33.3,
+    ("POR", "Toumani Camara"): 33.3,
+    ("OKC", "Shai Gilgeous-Alexander"): 33.2,
+    ("LAL", "LeBron James"): 33.2,
+    ("IND", "Pascal Siakam"): 33.2,
 }
 
 
@@ -193,3 +267,81 @@ def get_rotation_status(player_name, team_abbr):
         return 'rotation'
     else:
         return 'none'
+
+
+def get_actual_mpg(player_name, team_abbr):
+    """
+    Look up actual minutes per game from season stats.
+
+    Args:
+        player_name: Player's full name (e.g. 'Jalen Brunson')
+        team_abbr: Team abbreviation (e.g. 'NYK')
+
+    Returns:
+        Actual MPG float if found, otherwise None
+    """
+    key = (team_abbr.upper(), player_name)
+    return ACTUAL_MPG.get(key)
+
+
+def get_estimated_minutes(player_name, team_abbr, salary=None):
+    """
+    Get minutes per game for a player, preferring last-15-games data.
+
+    Priority:
+      1. Last-15-games MPG from ACTUAL_MPG (most DFS-relevant)
+      2. Estimated from rotation role + salary
+
+    Args:
+        player_name: Player's full name (e.g. 'Jalen Brunson')
+        team_abbr: Team abbreviation (e.g. 'NYK')
+        salary: Player's DK salary (used to refine star starter estimates)
+
+    Returns:
+        Minutes per game (float, rounded to 1 decimal)
+    """
+    # Prefer actual data
+    actual = get_actual_mpg(player_name, team_abbr)
+    if actual is not None:
+        return actual
+
+    # Fallback to role-based estimate
+    status = get_rotation_status(player_name, team_abbr)
+    base_minutes = {'starter': 33, 'rotation': 21, 'none': 8}.get(status, 8)
+
+    # Star starters (high salary) play more minutes
+    if status == 'starter' and salary is not None and salary >= 8000:
+        extra = min(5, (salary - 8000) / 2000)
+        base_minutes = base_minutes + extra
+
+    return round(base_minutes, 1)
+
+
+def get_minutes_weight(minutes):
+    """
+    Convert minutes per game to a reliability weight (0-1).
+    Players who play more minutes are more reliable DFS plays.
+
+    Scale:
+        35+ min -> 1.0 (full reliability)
+        30+ min -> 0.9
+        25+ min -> 0.8
+        20+ min -> 0.65
+        15+ min -> 0.5
+        10+ min -> 0.3
+        <10 min -> 0.15
+    """
+    if minutes >= 35:
+        return 1.0
+    elif minutes >= 30:
+        return 0.9
+    elif minutes >= 25:
+        return 0.8
+    elif minutes >= 20:
+        return 0.65
+    elif minutes >= 15:
+        return 0.5
+    elif minutes >= 10:
+        return 0.3
+    else:
+        return 0.15

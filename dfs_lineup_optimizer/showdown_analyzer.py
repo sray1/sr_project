@@ -5,6 +5,7 @@ NBA Showdown analyzer with captain optimization and proper DK scoring.
 from draft_kings import Client, Sport
 from contest_detector import detect_contest_type, get_contest_info, display_contest_info
 from draftkings_scoring import DKScoringCalculator, REALISTIC_STAT_LINES
+from nba_rotations import get_rotation_status, get_estimated_minutes, get_actual_mpg, get_minutes_weight, is_starter, is_rotation_player
 from pydfs_lineup_optimizer.player import Player
 import tempfile
 import sys
@@ -12,8 +13,10 @@ from datetime import datetime, timezone
 
 
 def create_pydfs_players_with_scoring(draftables):
-    """Create players with proper DK scoring."""
-    pydfs_players = []
+    """Create players with proper DK scoring, rotation role, and estimated minutes.
+
+    Deduplicates players by name — keeps the lower-salary entry (best for Showdown utility).
+    """
     calculator = DKScoringCalculator()
 
     # Get realistic stat lines
@@ -24,8 +27,17 @@ def create_pydfs_players_with_scoring(draftables):
 
     player_stat_mapping = {}
 
+    # First pass: collect all player data, then deduplicate by name
+    player_entries = {}  # full_name -> best entry dict
+
     for player in draftables.players:
+        # Skip injured / unavailable
+        if player.is_disabled:
+            continue
+
         positions = player.position_name.split('/')
+        full_name = player.name_details.display
+        team = player.team_details.abbreviation
         fppg = None
 
         # Try to find by player ID
@@ -69,67 +81,144 @@ def create_pydfs_players_with_scoring(draftables):
         if fppg is None:
             fppg = player.salary / 1000
 
+        # Deduplicate by player name: keep the lower salary (UTIL/base price, not CPT 1.5x price).
+        # For Showdown, DK lists CPT entries at 1.5x salary — those have inflated fppg
+        # because the stat-line matching uses the higher CPT salary. Keep the UTIL entry's fppg.
+        if full_name in player_entries:
+            existing = player_entries[full_name]
+            if player.salary < existing['salary']:
+                # New entry has lower (UTIL) salary — replace entirely
+                player_entries[full_name] = {
+                    'player_id': str(player.player_id),
+                    'first_name': player.name_details.first,
+                    'last_name': player.name_details.last,
+                    'positions': positions,
+                    'team': team,
+                    'salary': player.salary,
+                    'fppg': fppg,
+                }
+            # else: existing entry already has the lower salary — skip the CPT duplicate
+        else:
+            player_entries[full_name] = {
+                'player_id': str(player.player_id),
+                'first_name': player.name_details.first,
+                'last_name': player.name_details.last,
+                'positions': positions,
+                'team': team,
+                'salary': player.salary,
+                'fppg': fppg,
+            }
+
+    # Build final player list with rotation metadata
+    pydfs_players = []
+    player_meta = []
+
+    for full_name, entry in player_entries.items():
+        role = get_rotation_status(full_name, entry['team'])
+        est_minutes = get_estimated_minutes(full_name, entry['team'], salary=entry['salary'])
+        is_actual = get_actual_mpg(full_name, entry['team']) is not None
+
         pydfs_player = Player(
-            player_id=str(player.player_id),
-            first_name=player.name_details.first,
-            last_name=player.name_details.last,
-            positions=positions,
-            team=player.team_details.abbreviation,
-            salary=player.salary,
-            fppg=fppg,
-            is_injured=player.is_disabled,
+            player_id=entry['player_id'],
+            first_name=entry['first_name'],
+            last_name=entry['last_name'],
+            positions=entry['positions'],
+            team=entry['team'],
+            salary=entry['salary'],
+            fppg=entry['fppg'],
+            is_injured=False,
         )
         pydfs_players.append(pydfs_player)
+        player_meta.append({'role': role, 'minutes': est_minutes, 'mpg_actual': is_actual})
 
-    return pydfs_players
+    return pydfs_players, player_meta
 
 
-def generate_showdown_lineups(players, n_lineups=5):
-    """Generate optimal showdown lineups with captain optimization."""
-    # Sort players by value (fppg per $1k)
-    sorted_players = sorted(players, key=lambda p: p.fppg / (p.salary / 1000), reverse=True)
+def generate_showdown_lineups(players, player_meta, n_lineups=5):
+    """Generate optimal showdown lineups with captain optimization.
 
-    # Identify starting players (highest salary players are typically starters)
-    # In NBA showdown, starters are usually the top 6-8 players by salary
-    starting_players = sorted_players[:8]
+    Enforces the $50,000 salary cap strictly — skips lineups that exceed it.
 
-    # Captain candidates should be from starting players only
-    captain_candidates = starting_players[:6]
+    Args:
+        players: List of Player objects
+        player_meta: Parallel list of dicts with 'role' and 'minutes' for each player
+        n_lineups: Number of lineups to generate
+    """
+    SALARY_CAP = 50000
+
+    # Build name->meta lookup
+    meta_by_name = {}
+    for player, meta in zip(players, player_meta):
+        meta_by_name[player.full_name] = meta
+
+    # Sort players by adjusted value (minutes-prioritized)
+    def adjusted_value(player):
+        meta = meta_by_name.get(player.full_name, {'role': 'none', 'minutes': 8})
+        raw_val = player.fppg / (player.salary / 1000) if player.salary > 0 else 0
+        min_weight = get_minutes_weight(meta['minutes'])
+        return raw_val * (0.4 + 0.6 * min_weight)
+
+    sorted_players = sorted(players, key=adjusted_value, reverse=True)
+
+    # Captain candidates: STARTERS ONLY (highest floor & ceiling for captain spot)
+    captain_candidates = [p for p in sorted_players if meta_by_name.get(p.full_name, {}).get('role') == 'starter']
+    # Deduplicate while preserving order
+    seen = set()
+    unique_captains = []
+    for c in captain_candidates:
+        if c.id not in seen:
+            unique_captains.append(c)
+            seen.add(c.id)
+    captain_candidates = unique_captains
+
     lineups = []
 
-    # Generate lineups with different captain choices
-    for i, captain in enumerate(captain_candidates[:n_lineups]):
+    for captain in captain_candidates:
+        if len(lineups) >= n_lineups:
+            break
+
         captain_salary = captain.salary * 1.5
-        remaining_salary = 50000 - captain_salary
+        remaining_salary = SALARY_CAP - captain_salary
 
-        # Select 5 utility players (excluding captain)
-        util_players = [p for p in sorted_players if p.id != captain.id]
+        # Filter out the captain and players below $1,000 salary (invalid entries)
+        util_pool = [p for p in sorted_players if p.id != captain.id and p.salary >= 1000]
 
-        # Greedy selection based on value within salary constraints
-        selected_utils = []
+        # Strategy: greedy by adjusted value, respecting salary cap
+        selected = []
         current_salary = 0
+        used_ids = {captain.id}
 
-        for player in util_players:
-            if len(selected_utils) >= 5:
+        for player in util_pool:
+            if len(selected) >= 5:
                 break
-            if current_salary + player.salary <= remaining_salary:
-                selected_utils.append(player)
+            if player.id not in used_ids and current_salary + player.salary <= remaining_salary:
+                selected.append(player)
                 current_salary += player.salary
+                used_ids.add(player.id)
 
-        # Fill remaining spots if needed
-        while len(selected_utils) < 5:
-            for player in util_players:
-                if player not in selected_utils and player.id != captain.id:
-                    selected_utils.append(player)
+        # If we couldn't fill 5 spots, try filling with cheapest available
+        if len(selected) < 5:
+            cheapest = sorted([p for p in util_pool if p.id not in used_ids], key=lambda p: p.salary)
+            for player in cheapest:
+                if len(selected) >= 5:
                     break
+                if current_salary + player.salary <= remaining_salary:
+                    selected.append(player)
+                    current_salary += player.salary
+                    used_ids.add(player.id)
 
-        lineup = {
-            'captain': captain,
-            'utility': selected_utils,
-            'total_fppg': captain.fppg * 1.5 + sum(p.fppg for p in selected_utils),
-            'total_salary': captain_salary + sum(p.salary for p in selected_utils)
-        }
-        lineups.append(lineup)
+        # Only add lineup if we filled all 5 utility spots and are under cap
+        if len(selected) == 5:
+            total_salary = captain_salary + sum(p.salary for p in selected)
+            if total_salary <= SALARY_CAP:
+                lineup = {
+                    'captain': captain,
+                    'utility': selected,
+                    'total_fppg': captain.fppg * 1.5 + sum(p.fppg for p in selected),
+                    'total_salary': total_salary,
+                    'captain_cap_salary': captain_salary,
+                }
+                lineups.append(lineup)
 
     return lineups
 
@@ -200,20 +289,27 @@ def main():
     draftables = client.draftables(contest.draft_group_id)
     print(f"\nFound {len(draftables.players)} draftable players\n")
 
-    # Create players with proper scoring
-    players = create_pydfs_players_with_scoring(draftables)
+    # Create players with proper scoring + rotation metadata
+    players, player_meta = create_pydfs_players_with_scoring(draftables)
+
+    # Build name->meta lookup for lineup display
+    meta_by_name = {}
+    for player, meta in zip(players, player_meta):
+        meta_by_name[player.full_name] = meta
 
     # Generate showdown lineups
     print("Generating optimal showdown lineups with captain optimization...")
-    lineups = generate_showdown_lineups(players, n_lineups=5)
+    lineups = generate_showdown_lineups(players, player_meta, n_lineups=5)
 
     print(f"\nGenerated {len(lineups)} optimal showdown lineups\n")
 
-    # Display showdown lineups
+    # Display showdown lineups with role/minutes info
     for i, lineup in enumerate(lineups, 1):
+        cpt_meta = meta_by_name.get(lineup['captain'].full_name, {'role': 'none', 'minutes': 8, 'mpg_actual': False})
+        mpg_src = "MPG" if cpt_meta.get('mpg_actual') else "est"
         print(f"Lineup {i}:")
         print(f"  Captain: {lineup['captain'].full_name}")
-        print(f"    Team: {lineup['captain'].team}")
+        print(f"    Team: {lineup['captain'].team}  |  Role: {cpt_meta['role'].upper()}  |  {cpt_meta['minutes']:.1f} {mpg_src} min")
         print(f"    Base Salary: ${lineup['captain'].salary:,}")
         print(f"    Captain Salary: ${lineup['captain'].salary * 1.5:,.0f} (1.5x multiplier)")
         print(f"    Base FPPG: {lineup['captain'].fppg:.1f}")
@@ -223,7 +319,10 @@ def main():
         print(f"\n  Utility Players (5 spots):")
         for j, util in enumerate(lineup['utility'], 1):
             value = util.fppg / (util.salary / 1000) if util.salary > 0 else 0
-            print(f"    {j}. {util.full_name:<25} {util.team:3}  ${util.salary:>6,}  {util.fppg:5.1f} fppg ({value:.1f}X)")
+            util_meta = meta_by_name.get(util.full_name, {'role': 'none', 'minutes': 8, 'mpg_actual': False})
+            role_tag = util_meta['role'].upper()[:3]
+            mpg_src = "MPG" if util_meta.get('mpg_actual') else "est"
+            print(f"    {j}. {util.full_name:<25} {util.team:3}  ${util.salary:>6,}  {util.fppg:5.1f} fppg  {util_meta['minutes']:.1f}{mpg_src[:1]}  {role_tag}  ({value:.1f}X)")
 
         print(f"\n  Lineup Totals:")
         print(f"    Total FPPG: {lineup['total_fppg']:.1f}")
@@ -231,37 +330,106 @@ def main():
         print(f"    Salary Cap Remaining: ${50000 - lineup['total_salary']:,.0f}")
         print()
 
-    # Player value rankings
-    print("=" * 70)
-    print("PLAYER VALUE RANKINGS (DK Scoring)")
-    print("=" * 70)
+    # ── Minutes-prioritized player value rankings ──
+    print("=" * 95)
+    print("PLAYER VALUE RANKINGS (Minutes-Prioritized)")
+    print("  Sorted by Adjusted Value = (fppg * minutes_weight) / (salary/1k)")
+    print("  MPG = actual season minutes; est = role-based estimate")
+    print("  Starters & high-minute players ranked higher for DFS reliability")
+    print("=" * 95)
 
-    player_values = []
-    for player in players:
+    player_rankings = []
+    for idx, player in enumerate(players):
         if player.salary > 0:
-            value = player.fppg / (player.salary / 1000)
-            player_values.append((player, value))
+            meta = player_meta[idx]
+            role = meta['role']
+            minutes = meta['minutes']
+            mpg_actual = meta.get('mpg_actual', False)
+            raw_value = player.fppg / (player.salary / 1000)
+            min_weight = get_minutes_weight(minutes)
+            adjusted_value = raw_value * (0.4 + 0.6 * min_weight)
+            player_rankings.append({
+                'player': player,
+                'role': role,
+                'minutes': minutes,
+                'mpg_actual': mpg_actual,
+                'raw_value': raw_value,
+                'adjusted_value': adjusted_value,
+                'min_weight': min_weight,
+            })
 
-    player_values.sort(key=lambda x: x[1], reverse=True)
+    # Sort by adjusted value (minutes-prioritized)
+    player_rankings.sort(key=lambda x: x['adjusted_value'], reverse=True)
 
-    for i, (player, value) in enumerate(player_values[:15], 1):
-        pos_str = '/'.join(player.positions)
-        captain_value = value * 1.5  # What their value would be as captain
-        print(f"{i:3}. {player.full_name:<25} {pos_str:8} ${player.salary:>6,}  {player.fppg:6.1f} fppg ({value:.1f}X util / {captain_value:.1f}X cpt)")
+    print(f"\n{'#':>3}  {'Player':<25} {'Pos':<8} {'Team':<4} {'Salary':>7} {'FPPG':>6} "
+          f"{'Min':>6} {'Role':<4} {'Raw':>5} {'Adj':>5} {'Cpt':>5}")
+    print("-" * 95)
 
-    # Captain optimization analysis
-    print("\n" + "=" * 70)
-    print("CAPTAIN OPTIMIZATION ANALYSIS")
-    print("=" * 70)
+    for i, r in enumerate(player_rankings[:20], 1):
+        p = r['player']
+        pos_str = '/'.join(p.positions)
+        role_tag = r['role'][:3].upper()
+        mpg_src = "MPG" if r['mpg_actual'] else "est"
+        capt_adj = r['adjusted_value'] * 1.5
+        print(f"{i:3}. {p.full_name:<25} {pos_str:<8} {p.team:<4} ${p.salary:>6,}  {p.fppg:5.1f} "
+              f" {r['minutes']:5.1f}{mpg_src[0]}  {role_tag:<4} {r['raw_value']:5.1f}X {r['adjusted_value']:5.1f}X {capt_adj:5.1f}X")
 
-    print("\nBest Captain Candidates:")
-    for i, (player, value) in enumerate(player_values[:6], 1):
-        pos_str = '/'.join(player.positions)
-        cpt_fppg = player.fppg * 1.5
-        cpt_salary = player.salary * 1.5
+    # ── Role-separated view ──
+    starters = [r for r in player_rankings if r['role'] == 'starter']
+    rotation = [r for r in player_rankings if r['role'] == 'rotation']
+    bench = [r for r in player_rankings if r['role'] == 'none']
+
+    print("\n" + "=" * 95)
+    print("STARTERS (Projected 30+ min — highest floor & ceiling)")
+    print("=" * 95)
+    for i, r in enumerate(starters[:10], 1):
+        p = r['player']
+        pos_str = '/'.join(p.positions)
+        capt_adj = r['adjusted_value'] * 1.5
+        mpg_src = "MPG" if r['mpg_actual'] else "est"
+        print(f"{i:3}. {p.full_name:<25} {pos_str:<8} {p.team:<4} ${p.salary:>6,}  {p.fppg:5.1f} fppg  "
+              f"{r['minutes']:5.1f}{mpg_src[0]}  {r['raw_value']:5.1f}X raw  {r['adjusted_value']:5.1f}X adj  {capt_adj:5.1f}X cpt")
+
+    print("\n" + "=" * 95)
+    print("ROTATION (Projected 18-25 min — moderate role)")
+    print("=" * 95)
+    for i, r in enumerate(rotation[:10], 1):
+        p = r['player']
+        pos_str = '/'.join(p.positions)
+        capt_adj = r['adjusted_value'] * 1.5
+        mpg_src = "MPG" if r['mpg_actual'] else "est"
+        print(f"{i:3}. {p.full_name:<25} {pos_str:<8} {p.team:<4} ${p.salary:>6,}  {p.fppg:5.1f} fppg  "
+              f"{r['minutes']:5.1f}{mpg_src[0]}  {r['raw_value']:5.1f}X raw  {r['adjusted_value']:5.1f}X adj  {capt_adj:5.1f}X cpt")
+
+    if bench:
+        print("\n" + "=" * 95)
+        print("DEEP BENCH (Projected <10 min — high risk, low minutes)")
+        print("=" * 95)
+        for i, r in enumerate(bench[:10], 1):
+            p = r['player']
+            pos_str = '/'.join(p.positions)
+            capt_adj = r['adjusted_value'] * 1.5
+            mpg_src = "MPG" if r['mpg_actual'] else "est"
+            print(f"{i:3}. {p.full_name:<25} {pos_str:<8} {p.team:<4} ${p.salary:>6,}  {p.fppg:5.1f} fppg  "
+                  f"{r['minutes']:5.1f}{mpg_src[0]}  {r['raw_value']:5.1f}X raw  {r['adjusted_value']:5.1f}X adj  {capt_adj:5.1f}X cpt")
+
+    # Captain optimization analysis — now prioritizes starters
+    print("\n" + "=" * 95)
+    print("CAPTAIN OPTIMIZATION ANALYSIS (Starters Prioritized)")
+    print("=" * 95)
+
+    print("\nBest Captain Candidates (by adjusted value):")
+    # Use adjusted value for captain candidates, starters first
+    captain_candidates = sorted(player_rankings, key=lambda r: r['adjusted_value'], reverse=True)
+    for i, r in enumerate(captain_candidates[:6], 1):
+        p = r['player']
+        pos_str = '/'.join(p.positions)
+        cpt_fppg = p.fppg * 1.5
+        cpt_salary = p.salary * 1.5
         cpt_value = cpt_fppg / (cpt_salary / 1000)
-        print(f"{i}. {player.full_name:<25} {pos_str:8}")
-        print(f"   UTIL: {player.fppg:5.1f} fppg @ ${player.salary:>6,} ({value:.1f}X)")
+        mpg_src = "MPG" if r['mpg_actual'] else "est"
+        print(f"{i}. {p.full_name:<25} {pos_str:8}  ({r['role'].upper()[:3]}, {r['minutes']:.1f}{mpg_src[0]} min)")
+        print(f"   UTIL: {p.fppg:5.1f} fppg @ ${p.salary:>6,} ({r['raw_value']:.1f}X raw, {r['adjusted_value']:.1f}X adj)")
         print(f"   CPT:  {cpt_fppg:5.1f} fppg @ ${cpt_salary:>6,} ({cpt_value:.1f}X)")
 
     print("\n" + "=" * 70)
@@ -270,7 +438,8 @@ def main():
 
 
 if __name__ == "__main__":
-    # Save output to temp file
+    import os
+    # Save output to temp file AND a persistent project file
     original_stdout = sys.stdout
 
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', prefix='nba_showdown_') as temp_file:
@@ -298,4 +467,15 @@ if __name__ == "__main__":
             sys.stdout = original_stdout
 
     print(f"\nResults saved to temporary file: {temp_path}")
-    print("(This file will not be committed to git)")
+
+    # Also save a persistent copy in the output subdirectory
+    from datetime import datetime as dt
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, 'output')
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = dt.now().strftime('%Y-%m-%d_%H%M%S')
+    persistent_path = os.path.join(output_dir, f"nba_showdown_{timestamp}.txt")
+    with open(persistent_path, 'w', encoding='utf-8') as f:
+        with open(temp_path, 'r', encoding='utf-8', errors='replace') as tmp:
+            f.write(tmp.read())
+    print(f"Results also saved to: {persistent_path}")

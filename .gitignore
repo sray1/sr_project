@@ -221,3 +221,6 @@ __marimo__/
 dfs_analysis_*.txt
 dfs_showdown_analysis.txt
 *.db
+
+# DFS output files (timestamped results)
+dfs_lineup_optimizer/output/
