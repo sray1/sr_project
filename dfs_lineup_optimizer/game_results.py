@@ -6,6 +6,7 @@ DK scoring using the existing DKScoringCalculator.
 """
 
 from draftkings_scoring import DKScoringCalculator, PlayerStats
+from utils import SALARY_CAP
 from itertools import combinations
 from datetime import datetime, timezone
 import time
@@ -13,7 +14,7 @@ import time
 
 # NBA team abbreviation mapping (DK abbreviations -> nba_api IDs)
 NBA_TEAM_IDS = {
-    "ATL": 1610612737, "BOS": 1610612738, "BKN": 1610612741, "CHA": 1610612766,
+    "ATL": 1610612737, "BOS": 1610612738, "BKN": 1610612751, "CHA": 1610612766,
     "CHI": 1610612741, "CLE": 1610612739, "DAL": 1610612742, "DEN": 1610612743,
     "DET": 1610612765, "GSW": 1610612744, "HOU": 1610612745, "IND": 1610612754,
     "LAC": 1610612746, "LAL": 1610612747, "MEM": 1610612763, "MIA": 1610612748,
@@ -68,6 +69,45 @@ NBA_NAME_MAP = {
     "K. Olynyk": "Kelly Olynyk",
     "M. Plumlee": "Mason Plumlee",
 }
+
+
+def _normalize_player_name(short_name, team_abbr=None):
+    """Normalize an NBA player name from nba_api format to full name.
+
+    First checks the explicit NBA_NAME_MAP, then tries matching against
+    NBA rotation data by first initial + last name.
+
+    Args:
+        short_name: Player name in nba_api format (e.g., "V. Wembanyama")
+        team_abbr: Optional team abbreviation for rotation lookup
+
+    Returns:
+        Full player name if found, otherwise the original short_name
+    """
+    # Check explicit map first
+    if short_name in NBA_NAME_MAP:
+        return NBA_NAME_MAP[short_name]
+
+    # Try matching against rotation data by initial + last name
+    from nba_rotations import NBA_ROTATIONS
+
+    if '.' in short_name:
+        # Parse "V. Wembanyama" -> initial "V", last name "Wembanyama"
+        parts = short_name.strip().split('.', 1)
+        if len(parts) == 2:
+            initial = parts[0].strip()
+            last = parts[1].strip()
+            # Search all team rotations
+            teams_to_search = [NBA_ROTATIONS[team_abbr]] if team_abbr and team_abbr in NBA_ROTATIONS else NBA_ROTATIONS.values()
+            for team_data in teams_to_search:
+                for name in team_data.get("starting", []) + team_data.get("rotation", []):
+                    name_parts = name.split()
+                    if len(name_parts) >= 2:
+                        # Match on first initial + last name
+                        if name_parts[0][0] == initial and name_parts[-1].lower() == last.lower():
+                            return name
+
+    return short_name
 
 
 def _find_game_id(date, home_team, away_team, max_retries=3):
@@ -186,7 +226,7 @@ def fetch_box_score(game_id: str = None, date: str = None,
 
                 # Get player name - use nameI from nba_api, map to full name
                 short_name = row.get('nameI', '')
-                player_name = NBA_NAME_MAP.get(short_name, short_name)
+                player_name = _normalize_player_name(short_name, row.get('teamTricode', ''))
                 team_abbr = row.get('teamTricode', '')
 
                 # Parse stats
@@ -318,13 +358,13 @@ def calculate_actual_dk_points(player_name: str, actual_data: dict,
     return base
 
 
-def find_best_possible_lineup(player_scores: dict, salary_cap: float = 50000,
+def find_best_possible_lineup(player_scores: dict, salary_cap: float = SALARY_CAP,
                               min_salary: float = 3000, top_n: int = 5) -> list:
     """
     Find the best possible showdown lineup from actual game results.
 
-    Searches all captain candidates (top players by actual fppg)
-    and selects the 5 best utility players within the salary cap.
+    Uses exhaustive combinatorial enumeration to find the truly optimal lineups,
+    not just a greedy approximation.
 
     Args:
         player_scores: Dict of {name: {"fppg": float, "salary": float, "team": str}}
@@ -335,72 +375,12 @@ def find_best_possible_lineup(player_scores: dict, salary_cap: float = 50000,
     Returns:
         List of lineup dicts sorted by total actual fppg (descending)
     """
-    # Sort players by actual fppg
-    sorted_players = sorted(
-        [(name, data) for name, data in player_scores.items() if data["fppg"] > 0 and data["salary"] >= min_salary],
-        key=lambda x: x[1]["fppg"] / (x[1]["salary"] / 1000),
-        reverse=True
+    from lineup_optimizer import find_best_possible_showdown_lineup
+
+    return find_best_possible_showdown_lineup(
+        player_scores, salary_cap=salary_cap,
+        min_salary=int(min_salary), top_n=top_n
     )
-
-    if len(sorted_players) < 6:
-        return []
-
-    best_lineups = []
-
-    # Try each of the top 15 by value as captain
-    captain_candidates = sorted_players[:15]
-
-    for captain_name, captain_data in captain_candidates:
-        captain_salary_cap = captain_data["salary"] * 1.5
-        remaining_cap = salary_cap - captain_salary_cap
-        captain_fppg = captain_data["fppg"] * 1.5  # captain multiplier
-
-        # Get utility candidates (exclude captain, salary >= min_salary)
-        util_candidates = [
-            (name, data) for name, data in sorted_players
-            if name != captain_name and data["salary"] >= min_salary
-        ]
-
-        # Greedy: pick best value utilities that fit
-        selected = []
-        used_salary = 0
-        for name, data in util_candidates:
-            if len(selected) >= 5:
-                break
-            if used_salary + data["salary"] <= remaining_cap:
-                selected.append((name, data))
-                used_salary += data["salary"]
-
-        # If we didn't fill 5 spots, try cheapest first
-        if len(selected) < 5:
-            by_salary = sorted(util_candidates, key=lambda x: x[1]["salary"])
-            for name, data in by_salary:
-                if name in [s[0] for s in selected]:
-                    continue
-                if len(selected) >= 5:
-                    break
-                if used_salary + data["salary"] <= remaining_cap:
-                    selected.append((name, data))
-                    used_salary += data["salary"]
-
-        if len(selected) == 5:
-            total_fppg = captain_fppg + sum(d["fppg"] for _, d in selected)
-            total_salary = captain_salary_cap + sum(d["salary"] for _, d in selected)
-
-            lineup = {
-                "captain": captain_name,
-                "captain_salary": captain_data["salary"],
-                "captain_fppg": captain_data["fppg"],
-                "captain_actual_fppg": captain_data["fppg"],
-                "utility": [(n, d) for n, d in selected],
-                "total_fppg": total_fppg,
-                "total_salary": total_salary,
-            }
-            best_lineups.append(lineup)
-
-    # Sort by total actual fppg descending
-    best_lineups.sort(key=lambda x: x["total_fppg"], reverse=True)
-    return best_lineups[:top_n]
 
 
 def get_game_id_for_contest(contest_name: str) -> tuple:

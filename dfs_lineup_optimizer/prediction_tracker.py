@@ -15,7 +15,6 @@ Usage:
 
 import sys
 import argparse
-import tempfile
 from draftkings_scoring import DKScoringCalculator, PlayerStats
 from game_results import fetch_box_score, find_best_possible_lineup
 from db import (
@@ -23,6 +22,7 @@ from db import (
     display_history, display_accuracy_summary, display_player_history
 )
 from nba_rotations import is_starter
+from utils import SALARY_CAP, run_and_save
 
 
 # ============================================================
@@ -226,8 +226,20 @@ def display_actual_scores(player_scores, actual_data):
             print(f"  {name:<25} {base:6.1f} UTIL / {captain:6.1f} CPT")
 
 
-def display_lineup_comparison(player_scores, actual_data):
-    """Compare predicted lineups against actual results."""
+def display_lineup_comparison(player_scores, actual_data, predicted_lineups=None, projected_fppg=None):
+    """Compare predicted lineups against actual results.
+
+    Args:
+        player_scores: Dict of {name: {"fppg": float, "salary": float, "team": str}}
+        actual_data: Dict of actual game data
+        predicted_lineups: Optional list of predicted lineup dicts (uses PREDICTED_LINEUPS if None)
+        projected_fppg: Optional dict of {name: projected_fppg} (uses PROJECTED_FPPG if None)
+    """
+    if predicted_lineups is None:
+        predicted_lineups = PREDICTED_LINEUPS
+    if projected_fppg is None:
+        projected_fppg = PROJECTED_FPPG
+
     print("\n" + "=" * 80)
     print("LINEUP-BY-LINEUP COMPARISON (Projected vs Actual)")
     print("=" * 80)
@@ -235,7 +247,7 @@ def display_lineup_comparison(player_scores, actual_data):
     best_lineup_num = 0
     best_actual_total = 0
 
-    for i, lineup in enumerate(PREDICTED_LINEUPS, 1):
+    for i, lineup in enumerate(predicted_lineups, 1):
         captain = lineup["captain"]
 
         print(f"\nLineup {i}: Captain = {captain}")
@@ -243,7 +255,7 @@ def display_lineup_comparison(player_scores, actual_data):
         print(f"  {'-'*8} {'-'*25} {'-'*8} {'-'*8} {'-'*8}")
 
         # Captain row
-        cap_proj_base = PROJECTED_FPPG.get(captain, 0)
+        cap_proj_base = projected_fppg.get(captain, 0)
         cap_proj_cpt = cap_proj_base * 1.5
         cap_actual_base = player_scores.get(captain, {}).get("fppg", 0)
         cap_actual_cpt = cap_actual_base * 1.5
@@ -255,7 +267,7 @@ def display_lineup_comparison(player_scores, actual_data):
         lineup_actual_total = cap_actual_cpt
 
         for name, salary in lineup["utility"]:
-            proj = PROJECTED_FPPG.get(name, 0)
+            proj = projected_fppg.get(name, 0)
             actual = player_scores.get(name, {}).get("fppg", 0)
             diff = actual - proj
 
@@ -282,7 +294,7 @@ def display_best_possible_lineup(player_scores):
     print("BEST POSSIBLE LINEUP (Highest actual fppg within $50,000 salary cap)")
     print("=" * 80)
 
-    best_lineups = find_best_possible_lineup(player_scores, salary_cap=50000, min_salary=3000, top_n=5)
+    best_lineups = find_best_possible_lineup(player_scores, salary_cap=SALARY_CAP, min_salary=3000, top_n=5)
 
     if not best_lineups:
         print("\n  Could not find any valid lineups within the salary cap.")
@@ -399,7 +411,7 @@ def save_results_to_db(player_scores, actual_data, best_lineup_num, best_actual_
     print(f"  [DB] Saved {len(PREDICTED_LINEUPS)} predicted lineups")
 
     # Save best possible lineups
-    best_lineups = find_best_possible_lineup(player_scores, salary_cap=50000, min_salary=3000, top_n=5)
+    best_lineups = find_best_possible_lineup(player_scores, salary_cap=SALARY_CAP, min_salary=3000, top_n=5)
     for i, lineup in enumerate(best_lineups, 1):
         captain_actual_cpt = lineup["captain_actual_fppg"] * 1.5
 
@@ -493,32 +505,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Save output to temp file
-    original_stdout = sys.stdout
-
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', prefix='prediction_tracker_') as temp_file:
-        temp_path = temp_file.name
-
-        class MultiOutput:
-            def __init__(self, file1, file2):
-                self.file1 = file1
-                self.file2 = file2
-
-            def write(self, text):
-                self.file1.write(text)
-                self.file2.write(text)
-
-            def flush(self):
-                self.file1.flush()
-                self.file2.flush()
-
-        sys.stdout = MultiOutput(original_stdout, temp_file)
-
-        try:
-            main()
-            print(f"\nResults saved to: {temp_path}")
-        finally:
-            sys.stdout = original_stdout
-
-    print(f"\nResults saved to temporary file: {temp_path}")
-    print("(This file will not be committed to git)")
+    run_and_save(main, prefix='prediction_tracker_')

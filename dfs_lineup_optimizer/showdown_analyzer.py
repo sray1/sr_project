@@ -4,229 +4,43 @@ NBA Showdown analyzer with captain optimization and proper DK scoring.
 
 from draft_kings import Client, Sport
 from contest_detector import detect_contest_type, get_contest_info, display_contest_info
-from draftkings_scoring import DKScoringCalculator, REALISTIC_STAT_LINES
+from draftkings_scoring import DKScoringCalculator
 from nba_rotations import get_rotation_status, get_estimated_minutes, get_actual_mpg, get_minutes_weight, is_starter, is_rotation_player
-from pydfs_lineup_optimizer.player import Player
-import tempfile
-import sys
+from player_builder import create_pydfs_players_with_scoring
+from utils import SALARY_CAP, display_scoring_rules, run_and_save, get_draftkings_client
 from datetime import datetime, timezone
-
-
-def create_pydfs_players_with_scoring(draftables):
-    """Create players with proper DK scoring, rotation role, and estimated minutes.
-
-    Deduplicates players by name — keeps the lower-salary entry (best for Showdown utility).
-    """
-    calculator = DKScoringCalculator()
-
-    # Get realistic stat lines
-    stat_lines_by_name = {}
-    for player_id, stats in REALISTIC_STAT_LINES.items():
-        if stats.points > 0:
-            stat_lines_by_name[player_id] = stats
-
-    player_stat_mapping = {}
-
-    # First pass: collect all player data, then deduplicate by name
-    player_entries = {}  # full_name -> best entry dict
-
-    for player in draftables.players:
-        # Skip injured / unavailable
-        if player.is_disabled:
-            continue
-
-        positions = player.position_name.split('/')
-        full_name = player.name_details.display
-        team = player.team_details.abbreviation
-        fppg = None
-
-        # Try to find by player ID
-        for stat_id, stats in stat_lines_by_name.items():
-            if str(player.player_id) == stat_id:
-                fppg = calculator.calculate_fantasy_points(stats)
-                break
-
-        # Find by position and salary if no ID match
-        if fppg is None:
-            best_match = None
-            best_diff = float('inf')
-
-            for stat_id, stats in stat_lines_by_name.items():
-                if stat_id not in player_stat_mapping:
-                    expected_fppg = calculator.calculate_fantasy_points(stats)
-                    expected_salary = expected_fppg * 200
-
-                    # Position matching
-                    pos_match = False
-                    if 'C' in positions and stats.rebounds >= 8:
-                        pos_match = True
-                    elif 'PG' in positions and stats.assists >= 5:
-                        pos_match = True
-                    elif 'SG' in positions and stats.points >= 12:
-                        pos_match = True
-                    elif 'SF' in positions or 'PF' in positions:
-                        pos_match = True
-
-                    if pos_match:
-                        salary_diff = abs(expected_salary - player.salary)
-                        if salary_diff < best_diff:
-                            best_diff = salary_diff
-                            best_match = stat_id
-
-            if best_match:
-                fppg = calculator.calculate_fantasy_points(stat_lines_by_name[best_match])
-                player_stat_mapping[best_match] = True
-
-        # Fallback calculation
-        if fppg is None:
-            fppg = player.salary / 1000
-
-        # Deduplicate by player name: keep the lower salary (UTIL/base price, not CPT 1.5x price).
-        # For Showdown, DK lists CPT entries at 1.5x salary — those have inflated fppg
-        # because the stat-line matching uses the higher CPT salary. Keep the UTIL entry's fppg.
-        if full_name in player_entries:
-            existing = player_entries[full_name]
-            if player.salary < existing['salary']:
-                # New entry has lower (UTIL) salary — replace entirely
-                player_entries[full_name] = {
-                    'player_id': str(player.player_id),
-                    'first_name': player.name_details.first,
-                    'last_name': player.name_details.last,
-                    'positions': positions,
-                    'team': team,
-                    'salary': player.salary,
-                    'fppg': fppg,
-                }
-            # else: existing entry already has the lower salary — skip the CPT duplicate
-        else:
-            player_entries[full_name] = {
-                'player_id': str(player.player_id),
-                'first_name': player.name_details.first,
-                'last_name': player.name_details.last,
-                'positions': positions,
-                'team': team,
-                'salary': player.salary,
-                'fppg': fppg,
-            }
-
-    # Build final player list with rotation metadata
-    pydfs_players = []
-    player_meta = []
-
-    for full_name, entry in player_entries.items():
-        role = get_rotation_status(full_name, entry['team'])
-        est_minutes = get_estimated_minutes(full_name, entry['team'], salary=entry['salary'])
-        is_actual = get_actual_mpg(full_name, entry['team']) is not None
-
-        pydfs_player = Player(
-            player_id=entry['player_id'],
-            first_name=entry['first_name'],
-            last_name=entry['last_name'],
-            positions=entry['positions'],
-            team=entry['team'],
-            salary=entry['salary'],
-            fppg=entry['fppg'],
-            is_injured=False,
-        )
-        pydfs_players.append(pydfs_player)
-        player_meta.append({'role': role, 'minutes': est_minutes, 'mpg_actual': is_actual})
-
-    return pydfs_players, player_meta
 
 
 def generate_showdown_lineups(players, player_meta, n_lineups=5):
     """Generate optimal showdown lineups with captain optimization.
 
-    Enforces the $50,000 salary cap strictly — skips lineups that exceed it.
+    Uses exhaustive combinatorial enumeration to find the best possible lineups.
+    Delegates to lineup_optimizer for the actual search.
 
     Args:
         players: List of Player objects
         player_meta: Parallel list of dicts with 'role' and 'minutes' for each player
         n_lineups: Number of lineups to generate
     """
-    SALARY_CAP = 50000
+    from lineup_optimizer import generate_optimal_showdown_lineups
 
-    # Build name->meta lookup
-    meta_by_name = {}
-    for player, meta in zip(players, player_meta):
-        meta_by_name[player.full_name] = meta
-
-    # Sort players by adjusted value (minutes-prioritized)
-    def adjusted_value(player):
-        meta = meta_by_name.get(player.full_name, {'role': 'none', 'minutes': 8})
-        raw_val = player.fppg / (player.salary / 1000) if player.salary > 0 else 0
-        min_weight = get_minutes_weight(meta['minutes'])
-        return raw_val * (0.4 + 0.6 * min_weight)
-
-    sorted_players = sorted(players, key=adjusted_value, reverse=True)
-
-    # Captain candidates: STARTERS ONLY (highest floor & ceiling for captain spot)
-    captain_candidates = [p for p in sorted_players if meta_by_name.get(p.full_name, {}).get('role') == 'starter']
-    # Deduplicate while preserving order
-    seen = set()
-    unique_captains = []
-    for c in captain_candidates:
-        if c.id not in seen:
-            unique_captains.append(c)
-            seen.add(c.id)
-    captain_candidates = unique_captains
-
-    lineups = []
-
-    for captain in captain_candidates:
-        if len(lineups) >= n_lineups:
-            break
-
-        captain_salary = captain.salary * 1.5
-        remaining_salary = SALARY_CAP - captain_salary
-
-        # Filter out the captain and players below $1,000 salary (invalid entries)
-        util_pool = [p for p in sorted_players if p.id != captain.id and p.salary >= 1000]
-
-        # Strategy: greedy by adjusted value, respecting salary cap
-        selected = []
-        current_salary = 0
-        used_ids = {captain.id}
-
-        for player in util_pool:
-            if len(selected) >= 5:
-                break
-            if player.id not in used_ids and current_salary + player.salary <= remaining_salary:
-                selected.append(player)
-                current_salary += player.salary
-                used_ids.add(player.id)
-
-        # If we couldn't fill 5 spots, try filling with cheapest available
-        if len(selected) < 5:
-            cheapest = sorted([p for p in util_pool if p.id not in used_ids], key=lambda p: p.salary)
-            for player in cheapest:
-                if len(selected) >= 5:
-                    break
-                if current_salary + player.salary <= remaining_salary:
-                    selected.append(player)
-                    current_salary += player.salary
-                    used_ids.add(player.id)
-
-        # Only add lineup if we filled all 5 utility spots and are under cap
-        if len(selected) == 5:
-            total_salary = captain_salary + sum(p.salary for p in selected)
-            if total_salary <= SALARY_CAP:
-                lineup = {
-                    'captain': captain,
-                    'utility': selected,
-                    'total_fppg': captain.fppg * 1.5 + sum(p.fppg for p in selected),
-                    'total_salary': total_salary,
-                    'captain_cap_salary': captain_salary,
-                }
-                lineups.append(lineup)
-
-    return lineups
+    return generate_optimal_showdown_lineups(
+        players, player_meta, n_lineups=n_lineups,
+        captain_filter=None,  # Uses starter-only default from player_meta
+        min_util_salary=1000
+    )
 
 
 def main():
     """Main showdown analysis."""
-    client = Client()
-    contests_response = client.contests(Sport.NBA)
+    client = get_draftkings_client()
+
+    try:
+        contests_response = client.contests(Sport.NBA)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch contests from DraftKings API: {e}")
+        print("This may be due to a network issue or API change. Please try again later.")
+        return
 
     # Find NBA showdown contests
     showdown_contests = []
@@ -264,29 +78,14 @@ def main():
     print("=" * 70)
 
     # Display DK scoring rules
-    print("=" * 70)
-    print("DRAFTKINGS NBA SCORING RULES")
-    print("=" * 70)
-    print("\nBase Scoring:")
-    print("  Points: +1.0")
-    print("  Rebounds: +1.25")
-    print("  Assists: +1.5")
-    print("  Steals: +2.0")
-    print("  Blocks: +2.0")
-    print("  Turnovers: -0.5")
-    print("  3-Pointers Made: +0.5")
-    print("  Double-Double: +1.5")
-    print("  Triple-Double: +3.0")
-
-    print("\nShowdown-Specific Rules:")
-    print("  - Roster: 6 players (1 Captain + 5 UTIL)")
-    print("  - Captain: 1.5x multiplier on BOTH points AND salary")
-    print("  - Salary Cap: $50,000")
-    print("  - Captain counts as 1.5 spots in salary calculation")
-    print("=" * 70)
+    display_scoring_rules(contest_type="showdown")
 
     # Get player data
-    draftables = client.draftables(contest.draft_group_id)
+    try:
+        draftables = client.draftables(contest.draft_group_id)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch draftable players: {e}")
+        return
     print(f"\nFound {len(draftables.players)} draftable players\n")
 
     # Create players with proper scoring + rotation metadata
@@ -438,44 +237,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import os
-    # Save output to temp file AND a persistent project file
-    original_stdout = sys.stdout
-
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', prefix='nba_showdown_') as temp_file:
-        temp_path = temp_file.name
-
-        class MultiOutput:
-            def __init__(self, file1, file2):
-                self.file1 = file1
-                self.file2 = file2
-
-            def write(self, text):
-                self.file1.write(text)
-                self.file2.write(text)
-
-            def flush(self):
-                self.file1.flush()
-                self.file2.flush()
-
-        sys.stdout = MultiOutput(original_stdout, temp_file)
-
-        try:
-            main()
-            print(f"\nResults saved to: {temp_path}")
-        finally:
-            sys.stdout = original_stdout
-
-    print(f"\nResults saved to temporary file: {temp_path}")
-
-    # Also save a persistent copy in the output subdirectory
-    from datetime import datetime as dt
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, 'output')
-    os.makedirs(output_dir, exist_ok=True)
-    timestamp = dt.now().strftime('%Y-%m-%d_%H%M%S')
-    persistent_path = os.path.join(output_dir, f"nba_showdown_{timestamp}.txt")
-    with open(persistent_path, 'w', encoding='utf-8') as f:
-        with open(temp_path, 'r', encoding='utf-8', errors='replace') as tmp:
-            f.write(tmp.read())
-    print(f"Results also saved to: {persistent_path}")
+    run_and_save(main, prefix='nba_showdown_', output_dir='output')

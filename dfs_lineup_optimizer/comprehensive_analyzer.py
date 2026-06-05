@@ -3,387 +3,49 @@ Comprehensive NBA DFS analyzer with contest type detection and proper scoring ru
 """
 
 from draft_kings import Client, Sport
-from pydfs_lineup_optimizer import get_optimizer, Site, Sport as PyDFSSport
 from pydfs_lineup_optimizer.player import Player
 from contest_detector import (
-    detect_contest_type, get_contest_info, display_contest_info,
-    apply_captain_multiplier, calculate_lineup_score
+    detect_contest_type, get_contest_info, display_contest_info
 )
-from draftkings_scoring import DKScoringCalculator, REALISTIC_STAT_LINES, PlayerStats
-from nba_rotations import get_rotation_status, is_starter, NBA_ROTATIONS
+from nba_rotations import is_starter
 from db import init_db, save_game, save_player_performance, save_lineup
-import tempfile
-import sys
+from player_builder import create_pydfs_players_with_scoring
+from utils import SALARY_CAP, display_scoring_rules, run_and_save, get_draftkings_client
 from datetime import datetime, timezone
-from typing import List, Tuple
-
-# Use WNBA as placeholder for NBA in pydfs
-PyDFSSport.BASKETBALL = PyDFSSport.WNBA
-
-
-def create_pydfs_players_with_scoring(draftables, contest_type):
-    """Create pydfs players with proper DK scoring for contest type. Filters out injured/unavailable players."""
-    pydfs_players = []
-    calculator = DKScoringCalculator()
-
-    # Get all realistic stat lines
-    stat_lines_by_name = {}
-    for player_id, stats in REALISTIC_STAT_LINES.items():
-        if stats.points > 0:
-            stat_lines_by_name[player_id] = stats
-
-    player_stat_mapping = {}
-
-    # Track players by full name to deduplicate
-    player_name_map = {}
-
-    for player in draftables.players:
-        # Skip injured or unavailable players
-        if player.is_disabled:
-            continue
-
-        positions = player.position_name.split('/')
-        full_name = player.name_details.display
-
-        # Find matching stat line
-        fppg = None
-
-        # Try to find by player ID first
-        for stat_id, stats in stat_lines_by_name.items():
-            if str(player.player_id) == stat_id:
-                fppg = calculator.calculate_fantasy_points(stats)
-                break
-
-        # If no ID match, find by position and salary proximity
-        if fppg is None:
-            best_match = None
-            best_diff = float('inf')
-
-            for stat_id, stats in stat_lines_by_name.items():
-                if stat_id not in player_stat_mapping:
-                    expected_fppg = calculator.calculate_fantasy_points(stats)
-                    expected_salary = expected_fppg * 200
-
-                    # Position matching
-                    pos_match = False
-                    if 'C' in positions and stats.rebounds >= 8:
-                        pos_match = True
-                    elif 'PG' in positions and stats.assists >= 5:
-                        pos_match = True
-                    elif 'SG' in positions and stats.points >= 12:
-                        pos_match = True
-                    elif 'SF' in positions or 'PF' in positions:
-                        pos_match = True
-
-                    if pos_match:
-                        salary_diff = abs(expected_salary - player.salary)
-                        if salary_diff < best_diff:
-                            best_diff = salary_diff
-                            best_match = stat_id
-
-            if best_match:
-                fppg = calculator.calculate_fantasy_points(stat_lines_by_name[best_match])
-                player_stat_mapping[best_match] = True
-
-        # Fallback calculation
-        if fppg is None:
-            fppg = player.salary / 1000
-
-        # Deduplicate players by name - keep lower salary (utility position)
-        if full_name in player_name_map:
-            existing_player = player_name_map[full_name]
-            if player.salary < existing_player['salary']:
-                # Replace with lower salary entry
-                player_name_map[full_name] = {
-                    'salary': player.salary,
-                    'fppg': fppg,
-                    'player_id': str(player.player_id),
-                    'first_name': player.name_details.first,
-                    'last_name': player.name_details.last,
-                    'positions': positions,
-                    'team': player.team_details.abbreviation
-                }
-        else:
-            player_name_map[full_name] = {
-                'salary': player.salary,
-                'fppg': fppg,
-                'player_id': str(player.player_id),
-                'first_name': player.name_details.first,
-                'last_name': player.name_details.last,
-                'positions': positions,
-                'team': player.team_details.abbreviation
-            }
-
-    # Create Player objects from deduplicated data
-    for player_data in player_name_map.values():
-        pydfs_player = Player(
-            player_id=player_data['player_id'],
-            first_name=player_data['first_name'],
-            last_name=player_data['last_name'],
-            positions=player_data['positions'],
-            team=player_data['team'],
-            salary=player_data['salary'],
-            fppg=player_data['fppg'],
-            is_injured=False,
-        )
-        pydfs_players.append(pydfs_player)
-
-    return pydfs_players
+from typing import List
 
 
 def generate_showdown_lineups(players: List[Player], contest_info, n_lineups=5) -> List[dict]:
+    """Generate optimal showdown lineups using exhaustive combinatorial enumeration.
+
+    Delegates to lineup_optimizer for the actual search.
+    Uses top-15-by-value + starters as captain candidates (no rotation meta needed).
     """
-    Generate optimal showdown lineups with captain optimization.
+    from lineup_optimizer import generate_optimal_showdown_lineups
 
-    For showdown, we need to optimize both:
-    1. Which player to make captain
-    2. Which 5 utility players to select
-
-    Captain candidates are the top 15 by value (fppg per $1k).
-    Players under $3000 salary are excluded from lineups (unless user requests).
-    Utility players must have at least 5 fppg.
-    Starters are prioritized over rotation players.
-    """
-    calculator = DKScoringCalculator()
-    lineups = []
-
-    # Sort players by value (fppg per $1k)
-    sorted_players = sorted(players, key=lambda p: p.fppg / (p.salary / 1000), reverse=True)
-
-    # Top 15 by value are captain candidates, plus any starters from rotation data
-    top_15_by_value = sorted_players[:15]
-    starter_names = set()
-    for team_data in NBA_ROTATIONS.values():
-        for name in team_data["starting"]:
-            starter_names.add(name)
-
-    # Add starters not already in top 15
-    for player in sorted_players:
-        if player.full_name in starter_names and player not in top_15_by_value:
-            top_15_by_value.append(player)
-
-    captain_candidates = top_15_by_value
-
-    # Sort captain candidates by salary (ascending) to find viable captains first
-    # since high-salary captains may not fit the cap with 1.5x multiplier
-    captain_candidates_by_salary = sorted(captain_candidates, key=lambda p: p.salary)
-
-    def try_fill_utils(util_players, remaining_salary, captain):
-        """
-        Try multiple strategies to fill 5 utility spots within budget.
-        Returns the best lineup (list of 5 players) or empty list if impossible.
-        """
-        best_lineup = []
-        best_fppg = 0
-
-        # Strategy 1: Greedy by value (highest value first)
-        selected = []
-        current_salary = 0
-        for player in util_players:
-            if len(selected) >= 5:
-                break
-            if current_salary + player.salary <= remaining_salary:
-                selected.append(player)
-                current_salary += player.salary
-
-        # Fill remaining spots with cheapest available
-        if len(selected) < 5:
-            by_salary = sorted([p for p in util_players if p not in selected], key=lambda p: p.salary)
-            for player in by_salary:
-                if len(selected) >= 5:
-                    break
-                if current_salary + player.salary <= remaining_salary:
-                    selected.append(player)
-                    current_salary += player.salary
-
-        if len(selected) == 5:
-            total_fppg = sum(p.fppg for p in selected)
-            if total_fppg > best_fppg:
-                best_lineup = selected[:]
-                best_fppg = total_fppg
-
-        # Strategy 2: Greedy by fppg (highest scoring first)
-        selected2 = []
-        current_salary2 = 0
-        util_by_fppg = sorted(util_players, key=lambda p: p.fppg, reverse=True)
-        for player in util_by_fppg:
-            if len(selected2) >= 5:
-                break
-            if current_salary2 + player.salary <= remaining_salary:
-                selected2.append(player)
-                current_salary2 += player.salary
-
-        if len(selected2) < 5:
-            by_salary = sorted([p for p in util_players if p not in selected2], key=lambda p: p.salary)
-            for player in by_salary:
-                if len(selected2) >= 5:
-                    break
-                if current_salary2 + player.salary <= remaining_salary:
-                    selected2.append(player)
-                    current_salary2 += player.salary
-
-        if len(selected2) == 5:
-            total_fppg2 = sum(p.fppg for p in selected2)
-            if total_fppg2 > best_fppg:
-                best_lineup = selected2[:]
-                best_fppg = total_fppg2
-
-        # Strategy 3: Budget-aware - start cheap then upgrade
-        selected3 = []
-        current_salary3 = 0
-        cheapest = sorted(util_players, key=lambda p: p.salary)
-        for player in cheapest:
-            if len(selected3) >= 5:
-                break
-            if current_salary3 + player.salary <= remaining_salary:
-                selected3.append(player)
-                current_salary3 += player.salary
-
-        # Upgrade each slot with higher-fppg players
-        for i in range(len(selected3)):
-            current = selected3[i]
-            for player in util_players:
-                if player not in selected3 and player.id != captain.id:
-                    new_total = current_salary3 - current.salary + player.salary
-                    if new_total <= remaining_salary and player.fppg > current.fppg:
-                        selected3[i] = player
-                        current_salary3 = new_total
-                        break
-
-        if len(selected3) == 5:
-            total_fppg3 = sum(p.fppg for p in selected3)
-            if total_fppg3 > best_fppg:
-                best_lineup = selected3[:]
-                best_fppg = total_fppg3
-
-        # Strategy 4: Drop most expensive to make room for 2 cheaper players
-        # Try removing the most expensive player from Strategy 1 and filling with
-        # cheaper options that fit under the cap
-        if len(selected) == 4:
-            # We have 4 players, need a 5th. Try every eligible player that fits.
-            used_ids = {p.id for p in selected}
-            budget_left = remaining_salary - current_salary
-            for player in sorted(util_players, key=lambda p: p.fppg, reverse=True):
-                if player.id not in used_ids and player.salary <= budget_left:
-                    candidate = selected + [player]
-                    total_fppg = sum(p.fppg for p in candidate)
-                    if total_fppg > best_fppg:
-                        best_lineup = candidate[:]
-                        best_fppg = total_fppg
-                    break
-
-        # Strategy 5: For each picked player, try swapping for a cheaper one
-        # to free up budget for a 5th player
-        if len(best_lineup) < 5 and len(selected) >= 4:
-            for i in range(len(selected)):
-                swapped = selected[:]
-                budget_after_remove = remaining_salary - current_salary + selected[i].salary
-                # Find cheapest eligible replacement
-                for player in sorted(util_players, key=lambda p: p.salary):
-                    if player.id not in {p.id for p in selected} and player.id != captain.id:
-                        if player.salary < selected[i].salary:
-                            remaining_after_swap = remaining_salary - (current_salary - selected[i].salary + player.salary)
-                            # Now try to fill 5th spot
-                            used_ids = {p.id for p in swapped}
-                            used_ids.discard(selected[i].id)
-                            used_ids.add(player.id)
-                            for fifth in sorted(util_players, key=lambda p: p.fppg, reverse=True):
-                                if fifth.id not in used_ids and fifth.salary <= remaining_after_swap:
-                                    candidate = selected[:i] + [player] + selected[i+1:] + [fifth]
-                                    total_fppg = sum(p.fppg for p in candidate)
-                                    if total_fppg > best_fppg:
-                                        best_lineup = candidate[:]
-                                        best_fppg = total_fppg
-                                    break
-                            break
-
-        return best_lineup
-
-    # Generate lineups with different captain choices
-    valid_lineups = 0
-    for captain in captain_candidates_by_salary:
-        if valid_lineups >= n_lineups:
-            break
-
-        # In showdown, captain salary counts as 1.5 spots in salary cap calculation
-        remaining_salary = 50000 - (captain.salary * 1.5)
-
-        # Select 5 utility players (excluding captain)
-        util_players = [p for p in sorted_players if p.id != captain.id]
-
-        # Filter out players with less than 5 fppg for utility spots
-        util_players = [p for p in util_players if p.fppg >= 5]
-
-        # Filter out players under $3000 from utility spots
-        util_players = [p for p in util_players if p.salary >= 3000]
-
-        # Sort utility players by value (descending)
-        util_players.sort(key=lambda p: p.fppg / (p.salary / 1000), reverse=True)
-
-        selected_utils = try_fill_utils(util_players, remaining_salary, captain)
-
-        # Only add lineup if we have exactly 5 utility players
-        if len(selected_utils) == 5:
-            total_salary = (captain.salary * 1.5) + sum(p.salary for p in selected_utils)
-
-            # Double-check salary cap
-            if total_salary <= 50000:
-                lineup = {
-                    'captain': captain,
-                    'utility': selected_utils,
-                    'total_fppg': captain.fppg * 1.5 + sum(p.fppg for p in selected_utils),
-                    'total_salary': total_salary,
-                    'captain_cap_salary': captain.salary * 1.5
-                }
-                lineups.append(lineup)
-                valid_lineups += 1
-
-    return lineups
+    return generate_optimal_showdown_lineups(
+        players, player_meta=None, n_lineups=n_lineups,
+        captain_filter=lambda p, m: True,  # All players eligible as captain for classic
+        min_util_salary=3000
+    )
 
 
 def generate_classic_lineups(players: List[Player], n_lineups=5) -> List:
     """Generate optimal classic lineups using pydfs optimizer."""
-    optimizer = get_optimizer(Site.DRAFTKINGS, PyDFSSport.BASKETBALL)
-    optimizer.load_players(players)
-    return list(optimizer.optimize(n=n_lineups))
-
-
-def display_scoring_rules(contest_type):
-    """Display scoring rules for the contest type."""
-    print("=" * 70)
-    print("DRAFTKINGS NBA SCORING RULES")
-    print("=" * 70)
-
-    print("\nBase Scoring:")
-    print("  Points: +1.0")
-    print("  Rebounds: +1.25")
-    print("  Assists: +1.5")
-    print("  Steals: +2.0")
-    print("  Blocks: +2.0")
-    print("  Turnovers: -0.5")
-    print("  3-Pointers Made: +0.5")
-    print("  Double-Double: +1.5")
-    print("  Triple-Double: +3.0")
-
-    if contest_type == "showdown":
-        print("\nShowdown-Specific Rules:")
-        print("  - Roster: 6 players (1 Captain + 5 UTIL)")
-        print("  - Captain: 1.5x multiplier on BOTH points AND salary")
-        print("  - Salary Cap: $50,000")
-        print("  - Captain counts as 1.5 spots in salary calculation")
-    else:
-        print("\nClassic-Specific Rules:")
-        print("  - Roster: 8 players (PG/SG/SF/PF/C positions)")
-        print("  - Salary Cap: $50,000")
-        print("  - Standard position requirements")
-
-    print("=" * 70)
+    from lineup_optimizer import generate_classic_lineups as _generate_classic
+    return _generate_classic(players, n_lineups)
 
 
 def main():
     """Main analysis function."""
-    client = Client()
-    contests_response = client.contests(Sport.NBA)
+    client = get_draftkings_client()
+
+    try:
+        contests_response = client.contests(Sport.NBA)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch contests from DraftKings API: {e}")
+        print("This may be due to a network issue or API change. Please try again later.")
+        return
 
     # Find next NBA contest
     showdown_contests = []
@@ -419,11 +81,19 @@ def main():
     display_scoring_rules(contest_type_str)
 
     # Get player data
-    draftables = client.draftables(contest.draft_group_id)
+    try:
+        draftables = client.draftables(contest.draft_group_id)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch draftable players: {e}")
+        return
     print(f"\nFound {len(draftables.players)} draftable players\n")
 
-    # Create players with proper scoring
-    players = create_pydfs_players_with_scoring(draftables, contest_type_str)
+    # Create players with proper scoring (rotation metadata needed for showdown)
+    result = create_pydfs_players_with_scoring(draftables, include_rotation_meta=(contest_type_str == "showdown"))
+    if contest_type_str == "showdown":
+        players, player_meta = result
+    else:
+        players = result
 
     # Generate lineups based on contest type
     if contest_type_str == "showdown":
@@ -555,32 +225,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Save output to temp file
-    original_stdout = sys.stdout
-
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', prefix='comprehensive_analysis_') as temp_file:
-        temp_path = temp_file.name
-
-        class MultiOutput:
-            def __init__(self, file1, file2):
-                self.file1 = file1
-                self.file2 = file2
-
-            def write(self, text):
-                self.file1.write(text)
-                self.file2.write(text)
-
-            def flush(self):
-                self.file1.flush()
-                self.file2.flush()
-
-        sys.stdout = MultiOutput(original_stdout, temp_file)
-
-        try:
-            main()
-            print(f"\nResults saved to: {temp_path}")
-        finally:
-            sys.stdout = original_stdout
-
-    print(f"\nResults saved to temporary file: {temp_path}")
-    print("(This file will not be committed to git)")
+    run_and_save(main, prefix='comprehensive_analysis_')

@@ -181,16 +181,176 @@ REALISTIC_STAT_LINES = {
                                    turnovers=1, three_pointers=2),  # Jordan Clarkson
 }
 
+# Module-level override for custom stat lines (set at runtime)
+_custom_stat_lines: Dict[str, PlayerStats] = {}
 
-def calculate_all_dk_projections() -> Dict[str, float]:
-    """Calculate DK fantasy points from realistic stat lines."""
-    calculator = DKScoringCalculator()
-    projections = {}
 
-    for player_id, stats in REALISTIC_STAT_LINES.items():
-        projections[player_id] = calculator.calculate_fantasy_points(stats)
+def set_stat_lines(new_stat_lines: Dict[str, PlayerStats]):
+    """Set custom stat lines to override DEFAULT_STAT_LINES at runtime.
 
-    return projections
+    Args:
+        new_stat_lines: Dict mapping player_id/name -> PlayerStats
+    """
+    global _custom_stat_lines
+    _custom_stat_lines = new_stat_lines
+
+
+def get_active_stat_lines() -> Dict[str, PlayerStats]:
+    """Get the active stat lines, preferring custom overrides over defaults.
+
+    Returns:
+        Dict mapping player_id/name -> PlayerStats
+    """
+    if _custom_stat_lines:
+        return _custom_stat_lines
+    return REALISTIC_STAT_LINES
+
+
+def generate_projections_from_salary(salary: float, positions: list = None) -> PlayerStats:
+    """Generate a projected stat line from salary using position-aware scaling.
+
+    Creates a realistic stat distribution based on player salary (which
+    correlates with usage and minutes) and position.
+
+    Args:
+        salary: DK salary (e.g., 10000)
+        positions: List of positions (e.g., ['PG', 'SG'])
+
+    Returns:
+        PlayerStats with projected stats
+    """
+    # Base fppg from salary (roughly salary / 1000 * 2.5 for starters)
+    # Higher salary = higher usage and more minutes
+    base_fppg = salary / 1000 * 2.5
+
+    # Position-based distribution adjustments
+    if positions is None:
+        positions = []
+
+    pos_str = '/'.join(positions)
+
+    # Default balanced distribution
+    dist = {'points': 0.4, 'rebounds': 0.15, 'assists': 0.15,
+            'steals': 0.05, 'blocks': 0.03, 'turnovers': -0.10}
+
+    # Adjust by primary position
+    if 'PG' in positions:
+        dist = {'points': 0.30, 'rebounds': 0.10, 'assists': 0.25,
+                'steals': 0.06, 'blocks': 0.01, 'turnovers': -0.12}
+    elif 'SG' in positions:
+        dist = {'points': 0.40, 'rebounds': 0.10, 'assists': 0.12,
+                'steals': 0.06, 'blocks': 0.01, 'turnovers': -0.10}
+    elif 'SF' in positions:
+        dist = {'points': 0.30, 'rebounds': 0.20, 'assists': 0.10,
+                'steals': 0.06, 'blocks': 0.03, 'turnovers': -0.08}
+    elif 'PF' in positions:
+        dist = {'points': 0.25, 'rebounds': 0.25, 'assists': 0.08,
+                'steals': 0.04, 'blocks': 0.06, 'turnovers': -0.08}
+    elif 'C' in positions:
+        dist = {'points': 0.20, 'rebounds': 0.30, 'assists': 0.05,
+                'steals': 0.03, 'blocks': 0.10, 'turnovers': -0.06}
+
+    # Star player bonus (salary >= 8000 means higher usage)
+    if salary >= 10000:
+        dist['points'] += 0.05
+        dist['assists'] += 0.02
+    elif salary >= 8000:
+        dist['points'] += 0.03
+
+    # Build stat line from fppg and distribution
+    rules = DKScoringRules()
+    projected_points = base_fppg * dist['points'] / rules.points
+    projected_rebounds = max(0, base_fppg * dist['rebounds'] / rules.rebounds)
+    projected_assists = max(0, base_fppg * dist['assists'] / rules.assists)
+    projected_steals = max(0, base_fppg * dist['steals'] / rules.steals)
+    projected_blocks = max(0, base_fppg * dist['blocks'] / rules.blocks)
+    projected_turnovers = max(0, base_fppg * abs(dist['turnovers']) / abs(rules.turnovers))
+    projected_3pt = max(0, projected_points * 0.25 / 3)  # ~25% of points from 3s
+
+    return PlayerStats(
+        points=round(projected_points, 1),
+        rebounds=round(projected_rebounds, 1),
+        assists=round(projected_assists, 1),
+        steals=round(projected_steals, 1),
+        blocks=round(projected_blocks, 1),
+        turnovers=round(projected_turnovers, 1),
+        three_pointers=round(projected_3pt, 1),
+    )
+
+
+def generate_projections_from_rotation(player_name: str, team_abbr: str,
+                                        salary: float, positions: list = None) -> PlayerStats:
+    """Generate projected stats using rotation data for better accuracy.
+
+    Combines rotation role (starter/rotation/bench) and estimated minutes
+    with salary to produce more realistic projections.
+
+    Args:
+        player_name: Full player name (e.g., 'Jalen Brunson')
+        team_abbr: Team abbreviation (e.g., 'NYK')
+        salary: DK salary
+        positions: List of positions (e.g., ['PG'])
+
+    Returns:
+        PlayerStats with projected stats
+    """
+    from nba_rotations import get_rotation_status, get_estimated_minutes
+
+    role = get_rotation_status(player_name, team_abbr)
+    minutes = get_estimated_minutes(player_name, team_abbr, salary=salary)
+
+    # Base fppg scales with minutes played
+    # Average starter: ~33 min → ~30 fppg, rotation: ~21 min → ~18 fppg, bench: ~8 min → ~6 fppg
+    if role == 'starter':
+        base_fppg = minutes * 0.90  # starters produce ~0.9 fppg per minute
+    elif role == 'rotation':
+        base_fppg = minutes * 0.85  # rotation players slightly less efficient
+    else:
+        base_fppg = minutes * 0.75  # bench players much less efficient
+
+    # Adjust with salary signal (higher salary = better per-minute production)
+    if salary >= 10000:
+        base_fppg *= 1.15
+    elif salary >= 8000:
+        base_fppg *= 1.05
+    elif salary < 4000:
+        base_fppg *= 0.90
+
+    # Position-based distribution
+    if positions is None:
+        positions = []
+
+    if 'PG' in positions:
+        dist = {'points': 0.30, 'rebounds': 0.10, 'assists': 0.25,
+                'steals': 0.06, 'blocks': 0.01, 'turnovers': -0.12}
+    elif 'SG' in positions:
+        dist = {'points': 0.40, 'rebounds': 0.10, 'assists': 0.12,
+                'steals': 0.06, 'blocks': 0.01, 'turnovers': -0.10}
+    elif 'SF' in positions:
+        dist = {'points': 0.30, 'rebounds': 0.20, 'assists': 0.10,
+                'steals': 0.06, 'blocks': 0.03, 'turnovers': -0.08}
+    elif 'PF' in positions:
+        dist = {'points': 0.25, 'rebounds': 0.25, 'assists': 0.08,
+                'steals': 0.04, 'blocks': 0.06, 'turnovers': -0.08}
+    elif 'C' in positions:
+        dist = {'points': 0.20, 'rebounds': 0.30, 'assists': 0.05,
+                'steals': 0.03, 'blocks': 0.10, 'turnovers': -0.06}
+    else:
+        dist = {'points': 0.25, 'rebounds': 0.25, 'assists': 0.20,
+                'steals': 0.08, 'blocks': 0.07, 'turnovers': -0.10}
+
+    rules = DKScoringRules()
+    stats = PlayerStats(
+        points=round(base_fppg * dist['points'] / rules.points, 1),
+        rebounds=round(base_fppg * dist['rebounds'] / rules.rebounds, 1),
+        assists=round(base_fppg * dist['assists'] / rules.assists, 1),
+        steals=round(base_fppg * dist['steals'] / rules.steals, 1),
+        blocks=round(base_fppg * dist['blocks'] / rules.blocks, 1),
+        turnovers=round(base_fppg * abs(dist['turnovers']) / abs(rules.turnovers), 1),
+        three_pointers=round(max(0, base_fppg * dist['points'] / rules.points * 0.25 / 3), 1),
+    )
+
+    return stats
 
 
 def display_scoring_breakdown(player_id: str = '1373356'):
