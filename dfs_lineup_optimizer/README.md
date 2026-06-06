@@ -48,17 +48,17 @@ uv sync
 | Module | Purpose |
 |--------|---------|
 | `utils.py` | `MultiOutput`, `SALARY_CAP`, `display_scoring_rules()`, `run_and_save()`, `get_draftkings_client()` |
-| `player_builder.py` | Unified player creation with CPT/UTIL dedup, stat-line matching, rotation metadata |
-| `lineup_optimizer.py` | Optimal lineup generation via combinatorial enumeration (showdown) and pydfs (classic) |
+| `player_builder.py` | Unified player creation with CPT/UTIL dedup, stat-line matching, rotation metadata, dynamic fallback projections |
+| `lineup_optimizer.py` | Optimal lineup generation via combinatorial enumeration (showdown) and pydfs (classic); deep bench exclusion & min fppg filtering |
 
 ### Data Flow
 
-1. **DraftKings API** → Fetch contests, draftable players, and draft group data
+1. **DraftKings API** → Fetch contests, draftable players, and draft group data (with retry logic via `get_draftkings_client()`)
 2. **contest_detector.py** → Classifies each contest as CLASSIC or SHOWDOWN
 3. **draftkings_scoring.py** → Calculates fantasy points using official DK scoring rules; dynamic projections via `generate_projections_from_salary()` and `generate_projections_from_rotation()`
 4. **nba_rotations.py** → NBA depth charts + actual last-15-games MPG for rotation-aware analysis
-5. **player_builder.py** → Creates deduplicated Player objects with fppg, rotation metadata, and minutes data
-6. **lineup_optimizer.py** → Exhaustive enumeration of all valid (CPT + 5 UTIL) combinations within salary cap
+5. **player_builder.py** → Creates deduplicated Player objects with fppg, rotation metadata, and minutes data; falls back to rotation-aware salary-based projections when no stat-line match exists
+6. **lineup_optimizer.py** → Exhaustive enumeration of all valid (CPT + 5 UTIL) combinations within salary cap; excludes deep bench and low-fppg punt plays
 7. **showdown_analyzer.py** → Main pipeline: finds highest-entry contest, uses player_builder + lineup_optimizer
 8. **comprehensive_analyzer.py** → Alternative entry point with DB tracking for both contest types
 
@@ -76,6 +76,8 @@ python dfs_lineup_optimizer/showdown_analyzer.py
 - Selects the showdown contest with the most entries
 - Deduplicates CPT/UTIL player entries (keeps base salary)
 - Generates 5 **optimal** lineups via combinatorial enumeration (guaranteed best within search space)
+- **Excludes deep bench** players (role='none') from all lineups
+- **Excludes low-production punt plays** (min fppg < 7.0) with inflated value ratios
 - Player value rankings sorted by adjusted value (minutes-weighted)
 - Role-separated views: Starters (30+ min), Rotation (18-25 min), Deep Bench (<10 min)
 - Captain optimization analysis prioritizing starters by adjusted value
@@ -168,16 +170,45 @@ Previous greedy heuristics could miss better combinations that mix expensive + c
 1. **CPT/UTIL deduplication** — DK lists each player twice (CPT at 1.5x salary, UTIL at base salary); keep the UTIL entry
 2. **Injured players filtered out**
 3. **Captain candidates** — starters only, sorted by adjusted value
-4. **Salary cap enforced** — all lineups validated to be under $50,000
-5. **Rotation data** — starters prioritized via `nba_rotations.py`
-6. **Dynamic projections** — when no stat-line match exists, uses rotation-aware salary-based projections instead of flat `salary/1000`
+4. **Deep bench excluded** — players with role='none' (no rotation role) are excluded from both captain and utility pools
+5. **Minimum fppg threshold** — utility players must project ≥ 7.0 fppg; filters out low-production minimum-salary punt plays with artificially inflated value ratios
+6. **Salary cap enforced** — all lineups validated to be under $50,000
+7. **Rotation data** — starters prioritized via `nba_rotations.py`
+8. **Dynamic projections** — when no stat-line match exists, uses rotation-aware salary-based projections instead of flat `salary/1000`
+
+### Why Exclude Deep Bench & Low-fppg Players?
+
+Minimum-salary players ($1,000) always show inflated raw value (e.g., 5 fppg ÷ $1k = 5.0X) because the denominator is tiny. A starter like Brunson at $10,600 with 47.2 fppg = 4.5X looks "worse" by raw value despite producing 9× more points. The minutes-weighted adjustment helps but doesn't fully solve it — `min_util_fppg=7.0` ensures only players with real DFS production make it into lineups.
+
+## Prediction Tracking
+
+After games are played, the prediction tracker compares projected vs actual performance:
+
+- **Lineup-by-lineup comparison** — projected vs actual fppg for each captain/utility slot
+- **Theoretical best lineup** — finds the optimal lineup from actual game results using the same combinatorial optimizer
+- **Efficiency score** — ratio of our best predicted lineup to the theoretical best
+- **SQLite database** — tracks results across multiple games for long-term accuracy analysis
+
+### Historical Results (NYK @ SAS 2026 Playoffs)
+
+| Game | Date | Best Predicted | Best Possible | Efficiency |
+|------|------|---------------|----------------|-------------|
+| Game 2 | 2026-06-05 | 209.8 fppg | 253.2 fppg | 82.8% |
+| Game 1 | 2026-06-04 | 196.6 fppg | 235.1 fppg | 83.6% |
+
+**Key learnings from tracking:**
+- **Josh Hart** is the biggest variance player: 40.8 fppg (Game 1) → 16.5 fppg (Game 2) — -24.3 swing
+- **Mikal Bridges** is the upside play: 20.8 fppg (Game 1) → 40.0 fppg (Game 2) — +19.2 swing
+- **Landry Shamet** outperformed as captain both games (7.2 projected → 23.6/33.0 actual) — cheap captain with 3-point upside
+- **Devin Vassell** and **De'Aaron Fox** had big Game 2 improvements (+11.4, +14.2)
+- Our old predictions used bench captains — the new optimizer uses starter-only captains, which should improve efficiency
 
 ## Output
 
 Results are saved to `dfs_lineup_optimizer/output/` with timestamps. Example filename:
 
 ```
-nba_showdown_2026-06-04_230752.txt
+nba_showdown_2026-06-06_112329.txt
 ```
 
 ## Scripts
@@ -210,13 +241,18 @@ nba_showdown_2026-06-04_230752.txt
 - **Adjusted Value**: Minutes-weighted value that discounts low-minute players for DFS reliability
 - **MPG**: Actual minutes per game from last 15 games (playoffs); `est` = role-based estimate for other teams
 - **Optimal Lineup**: Guaranteed best lineup within the search space (exhaustive enumeration, not greedy)
+- **Deep Bench**: Players with no rotation role (role='none') — excluded from lineups due to minimal playing time
+- **Punt Play**: Minimum-salary player with inflated value ratio — filtered by `min_util_fppg` threshold
 
 ## Notes
 
 - DraftKings does not have an official public API
 - Uses unofficial endpoints that may change without notice
 - Contest data is only available for current/upcoming slates
+- API calls use retry logic via `get_draftkings_client()` (3 retries, 2s delay)
 - NBA rotation data in `nba_rotations.py` is based on 2025-2026 season depth charts
 - MPG data sourced from Basketball-Reference and LandOfBasketball
+- Player name normalization in `game_results.py` cross-references `NBA_ROTATIONS` data for nba_api initial+lastname format
 - Output files are saved to `dfs_lineup_optimizer/output/` and excluded from git
 - Dynamic projections use position-aware salary scaling when no curated stat lines match a player
+- BKN team ID fixed from 1610612741 (was colliding with CHI) to correct 1610612751
