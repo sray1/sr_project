@@ -14,7 +14,8 @@ from utils import SALARY_CAP
 
 
 def generate_optimal_showdown_lineups(players, player_meta=None, n_lineups=5,
-                                      captain_filter=None, min_util_salary=1000):
+                                      captain_filter=None, min_util_salary=1000,
+                                      exclude_roles=None, min_util_fppg=0):
     """Generate optimal showdown lineups via exhaustive enumeration.
 
     Enumerates all valid (salary ≤ cap) 1-CPT + 5-UTIL combinations,
@@ -29,6 +30,12 @@ def generate_optimal_showdown_lineups(players, player_meta=None, n_lineups=5,
             captain candidates. If None and player_meta is provided,
             defaults to starters only. If neither, uses all players.
         min_util_salary: Minimum salary for utility players (default 1000)
+        exclude_roles: Optional set of roles to exclude from lineups entirely.
+            E.g., {'none'} excludes deep bench players with no rotation role.
+            Roles are: 'starter', 'rotation', 'none'.
+        min_util_fppg: Minimum projected fppg for utility players (default 0).
+            Filters out low-production minimum-salary punt plays that have
+            inflated value ratios due to the tiny salary denominator.
 
     Returns:
         List of lineup dicts, each with:
@@ -38,6 +45,9 @@ def generate_optimal_showdown_lineups(players, player_meta=None, n_lineups=5,
             'total_salary': float
             'captain_cap_salary': float (captain salary × 1.5)
     """
+    if exclude_roles is None:
+        exclude_roles = set()
+
     # Build name->meta lookup
     meta_by_name = {}
     if player_meta:
@@ -54,6 +64,11 @@ def generate_optimal_showdown_lineups(players, player_meta=None, n_lineups=5,
         # No rotation data: use all players as captain candidates
         captain_candidates = list(players)
 
+    # Exclude deep bench players from captain candidates too
+    if exclude_roles and player_meta:
+        captain_candidates = [p for p in captain_candidates
+                              if meta_by_name.get(p.full_name, {}).get('role') not in exclude_roles]
+
     # Deduplicate captains (same player ID should only appear once)
     seen_ids = set()
     unique_captains = []
@@ -67,8 +82,13 @@ def generate_optimal_showdown_lineups(players, player_meta=None, n_lineups=5,
         print("WARNING: No captain candidates found. Using all players.")
         captain_candidates = list(players)
 
-    # Filter utility pool
+    # Filter utility pool: min salary + role exclusions + min fppg
     valid_players = [p for p in players if p.salary >= min_util_salary]
+    if exclude_roles and player_meta:
+        valid_players = [p for p in valid_players
+                         if meta_by_name.get(p.full_name, {}).get('role') not in exclude_roles]
+    if min_util_fppg > 0:
+        valid_players = [p for p in valid_players if p.fppg >= min_util_fppg]
 
     # Enumerate all valid lineups
     best_lineups = []
@@ -113,17 +133,21 @@ def generate_optimal_showdown_lineups(players, player_meta=None, n_lineups=5,
 
 
 def generate_optimal_showdown_lineups_fast(players, player_meta=None, n_lineups=5,
-                                            captain_filter=None, min_util_salary=1000):
+                                            captain_filter=None, min_util_salary=1000,
+                                            exclude_roles=None, min_util_fppg=0):
     """Generate optimal showdown lineups with pruning for faster execution.
 
     Same result as generate_optimal_showdown_lineups but uses sorting
     and early termination to skip combinations that can't beat the current
     best N lineups.
 
-    Args: Same as generate_optimal_showdown_lineups
+    Args: Same as generate_optimal_showdown_lineups (including exclude_roles, min_util_fppg)
 
     Returns: Same as generate_optimal_showdown_lineups
     """
+    if exclude_roles is None:
+        exclude_roles = set()
+
     # Build name->meta lookup
     meta_by_name = {}
     if player_meta:
@@ -138,6 +162,11 @@ def generate_optimal_showdown_lineups_fast(players, player_meta=None, n_lineups=
     else:
         captain_candidates = list(players)
 
+    # Exclude deep bench from captain candidates
+    if exclude_roles and player_meta:
+        captain_candidates = [p for p in captain_candidates
+                              if meta_by_name.get(p.full_name, {}).get('role') not in exclude_roles]
+
     # Deduplicate captains
     seen_ids = set()
     unique_captains = []
@@ -151,11 +180,14 @@ def generate_optimal_showdown_lineups_fast(players, player_meta=None, n_lineups=
         print("WARNING: No captain candidates found. Using all players.")
         captain_candidates = list(players)
 
-    # Filter utility pool and sort by fppg descending for better pruning
-    valid_players = sorted(
-        [p for p in players if p.salary >= min_util_salary],
-        key=lambda p: p.fppg, reverse=True
-    )
+    # Filter utility pool: min salary + role exclusions + min fppg, sort by fppg
+    valid_players = [p for p in players if p.salary >= min_util_salary]
+    if exclude_roles and player_meta:
+        valid_players = [p for p in valid_players
+                         if meta_by_name.get(p.full_name, {}).get('role') not in exclude_roles]
+    if min_util_fppg > 0:
+        valid_players = [p for p in valid_players if p.fppg >= min_util_fppg]
+    valid_players.sort(key=lambda p: p.fppg, reverse=True)
 
     # Track best lineups with a running threshold
     best_lineups = []

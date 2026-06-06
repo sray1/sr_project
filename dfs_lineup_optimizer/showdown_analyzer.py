@@ -16,6 +16,7 @@ def generate_showdown_lineups(players, player_meta, n_lineups=5):
 
     Uses exhaustive combinatorial enumeration to find the best possible lineups.
     Delegates to lineup_optimizer for the actual search.
+    Excludes deep bench players (role='none') from lineups entirely.
 
     Args:
         players: List of Player objects
@@ -27,7 +28,9 @@ def generate_showdown_lineups(players, player_meta, n_lineups=5):
     return generate_optimal_showdown_lineups(
         players, player_meta, n_lineups=n_lineups,
         captain_filter=None,  # Uses starter-only default from player_meta
-        min_util_salary=1000
+        min_util_salary=1000,
+        exclude_roles={'none'},  # Exclude deep bench players (no rotation role)
+        min_util_fppg=7.0,  # Filter out low-production punt plays with inflated value ratios
     )
 
 
