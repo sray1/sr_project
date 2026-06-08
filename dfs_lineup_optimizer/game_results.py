@@ -24,19 +24,6 @@ NBA_TEAM_IDS = {
     "UTA": 1610612762, "WAS": 1610612764,
 }
 
-# Mapping of DK team abbreviations to nba_api abbreviations
-# DK sometimes uses different abbreviations
-DK_TO_NBA_ABBR = {
-    "ATL": "ATL", "BOS": "BOS", "BKN": "BKN", "CHA": "CHA",
-    "CHI": "CHI", "CLE": "CLE", "DAL": "DAL", "DEN": "DEN",
-    "DET": "DET", "GSW": "GSW", "HOU": "HOU", "IND": "IND",
-    "LAC": "LAC", "LAL": "LAL", "MEM": "MEM", "MIA": "MIA",
-    "MIL": "MIL", "MIN": "MIN", "NOP": "NOP", "NYK": "NYK",
-    "OKC": "OKC", "ORL": "ORL", "PHI": "PHI", "PHX": "PHX",
-    "POR": "POR", "SAC": "SAC", "SAS": "SAS", "TOR": "TOR",
-    "UTA": "UTA", "WAS": "WAS",
-}
-
 # Full name mapping: nba_api nameI format -> common full name
 NBA_NAME_MAP = {
     "V. Wembanyama": "Victor Wembanyama",
@@ -116,15 +103,6 @@ def _find_game_id(date, home_team, away_team, max_retries=3):
 
     home_id = NBA_TEAM_IDS.get(home_team)
     away_id = NBA_TEAM_IDS.get(away_team)
-
-    if home_id is None:
-        nba_abbr = DK_TO_NBA_ABBR.get(home_team)
-        if nba_abbr:
-            home_id = NBA_TEAM_IDS.get(nba_abbr)
-    if away_id is None:
-        nba_abbr = DK_TO_NBA_ABBR.get(away_team)
-        if nba_abbr:
-            away_id = NBA_TEAM_IDS.get(nba_abbr)
 
     for attempt in range(max_retries):
         try:

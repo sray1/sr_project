@@ -94,45 +94,6 @@ class DKScoringCalculator:
         )
         return self.calculate_fantasy_points(stats)
 
-    def estimate_stats_from_fppg(self, fppg: float, player_type: str = "balanced") -> PlayerStats:
-        """
-        Estimate player statistics from fantasy points per game.
-        This is a rough approximation for when only total FPPG is available.
-
-        Args:
-            fppg: Fantasy points per game
-            player_type: 'balanced', 'scorer', 'passer', 'defender', 'big'
-        """
-        stat_distributions = {
-            'scorer': {'points': 0.4, 'rebounds': 0.15, 'assists': 0.15,
-                       'steals': 0.05, 'blocks': 0.03, 'turnovers': -0.1},
-            'passer': {'points': 0.2, 'rebounds': 0.15, 'assists': 0.4,
-                       'steals': 0.08, 'blocks': 0.02, 'turnovers': -0.15},
-            'defender': {'points': 0.15, 'rebounds': 0.25, 'assists': 0.15,
-                        'steals': 0.15, 'blocks': 0.1, 'turnovers': -0.08},
-            'big': {'points': 0.2, 'rebounds': 0.4, 'assists': 0.1,
-                   'steals': 0.05, 'blocks': 0.15, 'turnovers': -0.1},
-            'balanced': {'points': 0.25, 'rebounds': 0.25, 'assists': 0.2,
-                        'steals': 0.08, 'blocks': 0.07, 'turnovers': -0.1}
-        }
-
-        dist = stat_distributions.get(player_type, stat_distributions['balanced'])
-
-        # Estimate base stat values
-        stats = PlayerStats(
-            points=fppg * dist['points'] / self.rules.points,
-            rebounds=fppg * dist['rebounds'] / self.rules.rebounds,
-            assists=fppg * dist['assists'] / self.rules.assists,
-            steals=fppg * dist['steals'] / self.rules.steals,
-            blocks=fppg * dist['blocks'] / self.rules.blocks,
-            turnovers=max(0, abs(fppg * dist['turnovers']) / abs(self.rules.turnovers)),
-        )
-
-        # Estimate 3-pointers (roughly 30% of points from 3s for shooters)
-        stats.three_pointers = max(0, stats.points * 0.3 / 3)
-
-        return stats
-
 
 # Example realistic stat lines from Daily Fantasy Fuel data
 REALISTIC_STAT_LINES = {
@@ -404,9 +365,9 @@ def display_scoring_breakdown(player_id: str = '1373356'):
 if __name__ == "__main__":
     display_scoring_breakdown()
 
-    # Show all calculated projections
+    # Show all calculated projections from realistic stat lines
     print("\nAll DK Fantasy Projections from Realistic Stats:")
-    projections = calculate_all_dk_projections()
-    for player_id, fppg in projections.items():
-        stats = REALISTIC_STAT_LINES[player_id]
-        print(f"  {stats.points:>2}pts/{stats.rebounds:>2}reb/{stats.assists:>2}ast -> {fppg:5.1f} fppg")
+    calculator = DKScoringCalculator()
+    for player_id, stats in REALISTIC_STAT_LINES.items():
+        fppg = calculator.calculate_fantasy_points(stats)
+        print(f"  {player_id}: {stats.points:>2}pts/{stats.rebounds:>2}reb/{stats.assists:>2}ast -> {fppg:5.1f} fppg")

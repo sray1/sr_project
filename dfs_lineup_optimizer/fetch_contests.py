@@ -3,9 +3,9 @@ Script to fetch DraftKings contest information using the draft-kings client.
 Includes contest type detection (Classic vs Showdown).
 """
 
-from draft_kings import Client, Sport
+from draft_kings import Sport
 from contest_detector import detect_contest_type
-from utils import run_and_save
+from utils import run_and_save, get_draftkings_client
 
 
 def fetch_contests(sport="NBA"):
@@ -15,7 +15,7 @@ def fetch_contests(sport="NBA"):
     Args:
         sport: Sport abbreviation (e.g., 'NBA', 'NFL', 'MLB')
     """
-    client = Client()
+    client = get_draftkings_client()
     print(f"Fetching contests for {sport}...")
     response = client.contests(sport)
     contests = response.contests if hasattr(response, 'contests') else []
@@ -49,7 +49,7 @@ def fetch_draftable_players(draft_group_id, limit=10):
         draft_group_id: The draft group ID
         limit: Number of players to display
     """
-    client = Client()
+    client = get_draftkings_client()
     print(f"Fetching draftable players for draft group {draft_group_id}...")
 
     draftables_response = client.draftables(draft_group_id)

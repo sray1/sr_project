@@ -79,88 +79,6 @@ def get_contest_info(contest_id: int, contest_name: str) -> ContestInfo:
         )
 
 
-def apply_captain_multiplier(base_fppg: float, is_captain: bool = False) -> float:
-    """
-    Apply captain multiplier to fantasy points for showdown contests.
-
-    Args:
-        base_fppg: Base fantasy points projection
-        is_captain: Whether the player is in the captain spot
-
-    Returns:
-        Adjusted fantasy points (multiplied if captain)
-    """
-    if is_captain:
-        return base_fppg * 1.5
-    return base_fppg
-
-
-def apply_salary_multiplier(base_salary: float, is_captain: bool = False) -> float:
-    """
-    Apply salary multiplier for captain spot in showdown contests.
-
-    Args:
-        base_salary: Base player salary
-        is_captain: Whether the player is in the captain spot
-
-    Returns:
-        Adjusted salary (multiplied by 1.5 if captain)
-    """
-    if is_captain:
-        return base_salary * 1.5
-    return base_salary
-
-
-def get_roster_requirements(contest_type: ContestType) -> dict:
-    """
-    Get roster requirements for the contest type.
-
-    Args:
-        contest_type: Classic or Showdown
-
-    Returns:
-        Dictionary with roster requirements
-    """
-    if contest_type == ContestType.SHOWDOWN:
-        return {
-            'total_spots': 6,
-            'captain_spots': 1,
-            'util_spots': 5,
-            'positions': ['CPT', 'UTIL', 'UTIL', 'UTIL', 'UTIL', 'UTIL'],
-            'salary_cap': 50000
-        }
-    else:
-        return {
-            'total_spots': 8,
-            'positions': ['PG', 'PG', 'SG', 'SG', 'SF', 'SF', 'PF', 'PF', 'C'],
-            'salary_cap': 50000,
-            'flex_spots': True
-        }
-
-
-def calculate_lineup_score(players: list, contest_type: ContestType, captain_index: int = 0) -> float:
-    """
-    Calculate total lineup score accounting for captain multiplier.
-
-    Args:
-        players: List of player objects with fppg attribute
-        contest_type: Classic or Showdown
-        captain_index: Index of captain player (only used for showdown)
-
-    Returns:
-        Total fantasy points for the lineup
-    """
-    if contest_type == ContestType.SHOWDOWN:
-        total = 0
-        for i, player in enumerate(players):
-            if i == captain_index:
-                total += player.fppg * 1.5
-            else:
-                total += player.fppg
-        return total
-    else:
-        return sum(player.fppg for player in players)
-
 
 def display_contest_info(contest_info: ContestInfo):
     """Display contest information and rules."""
@@ -187,7 +105,6 @@ def display_contest_info(contest_info: ContestInfo):
     print("=" * 70)
 
 
-# Examples
 if __name__ == "__main__":
     # Test contest detection
     test_contests = [
@@ -206,10 +123,3 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     showdown_info = get_contest_info(190875116, "NBA Showdown $1M Finals Tip-Off Special")
     display_contest_info(showdown_info)
-
-    # Test captain multiplier calculations
-    print("\nCaptain Multiplier Examples:")
-    print(f"  50 fppg player as UTIL: {apply_captain_multiplier(50, False)} fppg")
-    print(f"  50 fppg player as Captain: {apply_captain_multiplier(50, True)} fppg")
-    print(f"  $10,000 salary as UTIL: ${apply_salary_multiplier(10000, False):,.0f}")
-    print(f"  $10,000 salary as Captain: ${apply_salary_multiplier(10000, True):,.0f}")

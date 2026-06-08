@@ -4,8 +4,7 @@ NBA Showdown analyzer with captain optimization and proper DK scoring.
 
 from draft_kings import Client, Sport
 from contest_detector import detect_contest_type, get_contest_info, display_contest_info
-from draftkings_scoring import DKScoringCalculator
-from nba_rotations import get_rotation_status, get_estimated_minutes, get_actual_mpg, get_minutes_weight, is_starter, is_rotation_player
+from nba_rotations import get_minutes_weight
 from player_builder import create_pydfs_players_with_scoring
 from utils import SALARY_CAP, display_scoring_rules, run_and_save, get_draftkings_client
 from datetime import datetime, timezone

@@ -2,14 +2,15 @@
 List upcoming NBA DFS contests with contest type detection.
 """
 
-from draft_kings import Client, Sport
+from draft_kings import Sport
 from contest_detector import detect_contest_type
+from utils import get_draftkings_client
 from datetime import datetime, timezone
 
 
 def list_upcoming_nba_contests():
     """List all upcoming NBA contests with type detection."""
-    client = Client()
+    client = get_draftkings_client()
     contests_response = client.contests(Sport.NBA)
     now = datetime.now(timezone.utc)
 
