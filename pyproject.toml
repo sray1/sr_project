@@ -5,7 +5,14 @@ description = "Shonket's project"
 requires-python = ">=3.11"
 dependencies = [
     "draft-kings>=3.1.0",
+    "matplotlib>=3.10.9",
+    "nba-api>=1.11.4",
     "numpy>=2.0.0",
     "pandas>=3.0.0",
     "pydfs-lineup-optimizer>=3.6.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
 ]

@@ -1,193 +1,123 @@
 """
 Compare predicted DFS lineups to actual game results.
 
-Fetches NBA box scores via nba_api, calculates actual DK fantasy points,
-compares against projected lineups, finds the best possible lineup
-within the salary cap, and saves everything to a SQLite database
-for tracking accuracy over time.
+Fetches NBA box scores via nba_api with StatMuse verification,
+calculates actual DK fantasy points, compares against projected lineups,
+finds the best possible lineup within the salary cap, and saves everything
+to a SQLite database for tracking accuracy over time.
 
 Usage:
-  python dfs_lineup_optimizer/prediction_tracker.py              # Run tracker
+  python dfs_lineup_optimizer/prediction_tracker.py              # Run tracker (default: NYK @ SAS)
+  python dfs_lineup_optimizer/prediction_tracker.py --away SAS --home NYK --date 2026-06-08
   python dfs_lineup_optimizer/prediction_tracker.py --history     # View past results
   python dfs_lineup_optimizer/prediction_tracker.py --summary     # View accuracy summary
   python dfs_lineup_optimizer/prediction_tracker.py --player "Josh Hart"  # Player history
 """
 
-import sys
 import argparse
-from draftkings_scoring import DKScoringCalculator, PlayerStats
-from game_results import fetch_box_score, find_best_possible_lineup
+from draftkings_scoring import DKScoringCalculator
+from game_results import (
+    confirm_game_played, fetch_box_score, fetch_statmuse_box_score,
+    verify_box_score, find_best_possible_lineup
+)
 from db import (
     init_db, save_game, save_player_performance, save_lineup,
-    display_history, display_accuracy_summary, display_player_history
+    get_game_details, display_history, display_accuracy_summary,
+    display_player_history
 )
 from nba_rotations import is_starter
 from utils import SALARY_CAP, run_and_save
 
 
-# ============================================================
-# FALLBACK: Hardcoded NYK @ SAS Game 1 results (June 4, 2026)
-# Used when nba_api cannot fetch the data (offseason, API down, etc.)
-# ============================================================
-
-FALLBACK_NYK_STATS = {
-    "Jalen Brunson": {"stats": PlayerStats(points=30, rebounds=3, assists=2, steals=0, blocks=0, turnovers=4, three_pointers=2), "team": "NYK"},
-    "Karl-Anthony Towns": {"stats": PlayerStats(points=18, rebounds=12, assists=4, steals=0, blocks=1, turnovers=2, three_pointers=0), "team": "NYK"},
-    "OG Anunoby": {"stats": PlayerStats(points=17, rebounds=3, assists=0, steals=1, blocks=1, turnovers=0, three_pointers=3), "team": "NYK"},
-    "Landry Shamet": {"stats": PlayerStats(points=13, rebounds=1, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=3), "team": "NYK"},
-    "Mikal Bridges": {"stats": PlayerStats(points=9, rebounds=3, assists=3, steals=2, blocks=0, turnovers=1, three_pointers=0), "team": "NYK"},
-    "Josh Hart": {"stats": PlayerStats(points=3, rebounds=15, assists=6, steals=4, blocks=1, turnovers=0, three_pointers=0), "team": "NYK"},
-    "Miles McBride": {"stats": PlayerStats(points=6, rebounds=1, assists=4, steals=0, blocks=1, turnovers=0, three_pointers=2), "team": "NYK"},
-    "Jose Alvarado": {"stats": PlayerStats(points=7, rebounds=4, assists=1, steals=1, blocks=0, turnovers=1, three_pointers=1), "team": "NYK"},
-    "Mitchell Robinson": {"stats": PlayerStats(points=2, rebounds=6, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "NYK"},
-    "Jordan Clarkson": {"stats": PlayerStats(points=0, rebounds=1, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "NYK"},
-}
-
-FALLBACK_SAS_STATS = {
-    "Victor Wembanyama": {"stats": PlayerStats(points=26, rebounds=12, assists=2, steals=1, blocks=3, turnovers=6, three_pointers=2), "team": "SAS"},
-    "Stephon Castle": {"stats": PlayerStats(points=17, rebounds=8, assists=3, steals=0, blocks=0, turnovers=2, three_pointers=1), "team": "SAS"},
-    "Julian Champagnie": {"stats": PlayerStats(points=16, rebounds=10, assists=1, steals=0, blocks=1, turnovers=0, three_pointers=5), "team": "SAS"},
-    "Dylan Harper": {"stats": PlayerStats(points=16, rebounds=8, assists=1, steals=1, blocks=0, turnovers=1, three_pointers=1), "team": "SAS"},
-    "Devin Vassell": {"stats": PlayerStats(points=9, rebounds=9, assists=3, steals=0, blocks=0, turnovers=1, three_pointers=1), "team": "SAS"},
-    "De'Aaron Fox": {"stats": PlayerStats(points=7, rebounds=4, assists=5, steals=1, blocks=0, turnovers=3, three_pointers=0), "team": "SAS"},
-    "Keldon Johnson": {"stats": PlayerStats(points=3, rebounds=0, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=1), "team": "SAS"},
-    "Luke Kornet": {"stats": PlayerStats(points=0, rebounds=1, assists=0, steals=1, blocks=0, turnovers=0, three_pointers=0), "team": "SAS"},
-    "Carter Bryant": {"stats": PlayerStats(points=1, rebounds=0, assists=0, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "SAS"},
-    "Harrison Barnes": {"stats": PlayerStats(points=0, rebounds=2, assists=1, steals=0, blocks=0, turnovers=0, three_pointers=0), "team": "SAS"},
-}
-
-FALLBACK_ALL_STATS = {**FALLBACK_NYK_STATS, **FALLBACK_SAS_STATS}
-
-# Fallback salary data from our prediction run
-FALLBACK_SALARIES = {
-    "Victor Wembanyama": 12600, "Jalen Brunson": 10600, "Karl-Anthony Towns": 10200,
-    "Stephon Castle": 8600, "Josh Hart": 8200, "OG Anunoby": 7200,
-    "De'Aaron Fox": 7600, "Mikal Bridges": 6600, "Devin Vassell": 6200,
-    "Julian Champagnie": 5800, "Dylan Harper": 5400, "Landry Shamet": 4800,
-    "Miles McBride": 4400, "Mitchell Robinson": 4000, "Keldon Johnson": 3600,
-    "Carter Bryant": 2800, "Luke Kornet": 2400, "Harrison Barnes": 1600,
-    "Jordan Clarkson": 1200,
-}
-
-# Our predicted lineups from the comprehensive analyzer run
-PREDICTED_LINEUPS = [
-    {
-        "captain": "Landry Shamet",
-        "captain_salary": 4800,
-        "utility": [
-            ("Karl-Anthony Towns", 10200),
-            ("Jalen Brunson", 10600),
-            ("Victor Wembanyama", 12600),
-            ("Josh Hart", 8200),
-            ("Keldon Johnson", 3600),
-        ],
-    },
-    {
-        "captain": "Miles McBride",
-        "captain_salary": 4400,
-        "utility": [
-            ("Karl-Anthony Towns", 10200),
-            ("Jalen Brunson", 10600),
-            ("Victor Wembanyama", 12600),
-            ("Josh Hart", 8200),
-            ("Keldon Johnson", 3600),
-        ],
-    },
-    {
-        "captain": "Mitchell Robinson",
-        "captain_salary": 4000,
-        "utility": [
-            ("Karl-Anthony Towns", 10200),
-            ("Jalen Brunson", 10600),
-            ("Victor Wembanyama", 12600),
-            ("Josh Hart", 8200),
-            ("Keldon Johnson", 3600),
-        ],
-    },
-    {
-        "captain": "Luke Kornet",
-        "captain_salary": 2400,
-        "utility": [
-            ("Karl-Anthony Towns", 10200),
-            ("Jalen Brunson", 10600),
-            ("Victor Wembanyama", 12600),
-            ("Josh Hart", 8200),
-            ("Julian Champagnie", 5800),
-        ],
-    },
-    {
-        "captain": "Ariel Hukporti",
-        "captain_salary": 2000,
-        "utility": [
-            ("Karl-Anthony Towns", 10200),
-            ("Jalen Brunson", 10600),
-            ("Victor Wembanyama", 12600),
-            ("Josh Hart", 8200),
-            ("Devin Vassell", 6200),
-        ],
-    },
-]
-
-# Projected fppg from comprehensive analyzer
-PROJECTED_FPPG = {
-    "Karl-Anthony Towns": 47.2, "Jalen Brunson": 47.2,
-    "Victor Wembanyama": 56.0, "Josh Hart": 35.8,
-    "OG Anunoby": 30.5, "De'Aaron Fox": 26.5,
-    "Mikal Bridges": 23.0, "Devin Vassell": 21.2,
-    "Julian Champagnie": 19.2, "Keldon Johnson": 15.2,
-    "Dylan Harper": 15.5, "Stephon Castle": 37.2,
-    "Landry Shamet": 4.8, "Miles McBride": 4.4,
-    "Mitchell Robinson": 4.0, "Luke Kornet": 2.4,
-    "Ariel Hukporti": 2.0, "Carter Bryant": 1.0,
-    "Harrison Barnes": 0.5, "Jordan Clarkson": 0.5,
-}
-
-
 def fetch_game_results(away_team="NYK", home_team="SAS", date="2026-06-04"):
     """
-    Fetch actual game results from nba_api. Falls back to hardcoded data
-    if the API is unavailable (offseason, no game found, etc.).
+    Fetch actual game results with multi-source verification.
+
+    Flow:
+      1. Confirm the game was played (nba_api scoreboard + StatMuse)
+      2. Fetch box score from nba_api (primary source)
+      3. Fetch box score from StatMuse (secondary source)
+      4. Cross-verify and merge data from both sources
+      5. Build player_scores dict with DK fantasy points + salary estimates
+
+    Returns:
+        tuple: (player_scores, actual_data, game_info) or (None, None, None) if game not found
     """
     calc = DKScoringCalculator()
 
+    # Step 1: Confirm the game was played
+    print(f"Confirming game: {away_team} @ {home_team} on {date}...")
+    game_info = confirm_game_played(date, away_team, home_team)
+
+    if not game_info["played"]:
+        print(f"\n  ERROR: Game not found or not yet played for {away_team} @ {home_team} on {date}")
+        print(f"  The game may not have started, or the teams/date may be incorrect.")
+        print(f"  Check the schedule and try again with --away and --home flags.")
+        return None, None, None
+
+    print(f"  Game confirmed: {game_info['final_score']} (source: {game_info['source']})")
+
+    # Step 2: Try nba_api as primary source
+    actual_data = None
+    source = "unknown"
+    nba_api_data = None
+    statmuse_data = None
+
     try:
-        print(f"Fetching box score for {away_team} @ {home_team} on {date}...")
-        actual_data = fetch_box_score(date=date, home_team=home_team, away_team=away_team)
-
-        if not actual_data:
-            raise ValueError("No player data returned")
-
-        print(f"  Successfully fetched data for {len(actual_data)} players\n")
-
-        # Build player_scores dict for find_best_possible_lineup
-        player_scores = {}
-        for name, data in actual_data.items():
-            base_fppg = calc.calculate_fantasy_points(data["stats"])
-            salary = FALLBACK_SALARIES.get(name, int(base_fppg * 200))
-            player_scores[name] = {
-                "fppg": base_fppg,
-                "salary": salary,
-                "team": data["team"],
-            }
-
-        return player_scores, actual_data
-
+        print(f"\n  Fetching box score from nba_api...")
+        nba_api_data = fetch_box_score(date=date, home_team=home_team, away_team=away_team)
+        if nba_api_data:
+            print(f"  Got data for {len(nba_api_data)} players from nba_api")
+            source = "nba_api"
+        else:
+            print(f"  nba_api returned no data")
     except Exception as e:
-        print(f"  Could not fetch from nba_api: {e}")
-        print(f"  Using fallback data (NYK @ SAS Game 1, June 4, 2026)\n")
+        print(f"  nba_api error: {e}")
 
-        # Use fallback data
-        player_scores = {}
-        for name, data in FALLBACK_ALL_STATS.items():
-            base_fppg = calc.calculate_fantasy_points(data["stats"])
-            salary = FALLBACK_SALARIES.get(name, int(base_fppg * 200))
-            player_scores[name] = {
-                "fppg": base_fppg,
-                "salary": salary,
-                "team": data["team"],
-            }
+    # Step 3: Try StatMuse as secondary source
+    try:
+        print(f"\n  Fetching box score from StatMuse...")
+        statmuse_data = fetch_statmuse_box_score(date, away_team, home_team)
+        if statmuse_data:
+            print(f"  Got data for {len(statmuse_data)} players from StatMuse")
+            if not nba_api_data:
+                source = "statmuse"
+        else:
+            print(f"  StatMuse returned no data")
+    except Exception as e:
+        print(f"  StatMuse error: {e}")
 
-        return player_scores, FALLBACK_ALL_STATS
+    # Step 4: Merge/verify data
+    if nba_api_data and statmuse_data:
+        print(f"\n  Cross-verifying nba_api vs StatMuse data...")
+        actual_data = verify_box_score(nba_api_data, statmuse_data)
+        source = "merged (nba_api + statmuse)"
+    elif nba_api_data:
+        actual_data = nba_api_data
+    elif statmuse_data:
+        actual_data = statmuse_data
+    else:
+        print(f"\n  ERROR: Could not fetch game results from any source")
+        print(f"  The game may not have box score data available yet.")
+        return None, None, None
+
+    print(f"\n  Using data from: {source}")
+    print(f"  Total players: {len(actual_data)}")
+
+    # Step 5: Build player_scores dict
+    player_scores = {}
+    for name, data in actual_data.items():
+        base_fppg = calc.calculate_fantasy_points(data["stats"])
+        # Estimate salary from fppg if no salary data available (~200x fppg)
+        salary = data.get("salary", int(base_fppg * 200))
+        player_scores[name] = {
+            "fppg": base_fppg,
+            "salary": salary,
+            "team": data["team"],
+        }
+
+    game_info["source"] = source
+    return player_scores, actual_data, game_info
 
 
 def display_actual_scores(player_scores, actual_data):
@@ -226,19 +156,18 @@ def display_actual_scores(player_scores, actual_data):
             print(f"  {name:<25} {base:6.1f} UTIL / {captain:6.1f} CPT")
 
 
-def display_lineup_comparison(player_scores, actual_data, predicted_lineups=None, projected_fppg=None):
+def display_lineup_comparison(player_scores, actual_data, predicted_lineups, projected_fppg):
     """Compare predicted lineups against actual results.
 
     Args:
         player_scores: Dict of {name: {"fppg": float, "salary": float, "team": str}}
         actual_data: Dict of actual game data
-        predicted_lineups: Optional list of predicted lineup dicts (uses PREDICTED_LINEUPS if None)
-        projected_fppg: Optional dict of {name: projected_fppg} (uses PROJECTED_FPPG if None)
+        predicted_lineups: List of predicted lineup dicts
+        projected_fppg: Dict of {name: projected_fppg}
     """
-    if predicted_lineups is None:
-        predicted_lineups = PREDICTED_LINEUPS
-    if projected_fppg is None:
-        projected_fppg = PROJECTED_FPPG
+    if not predicted_lineups:
+        print("\n  No predicted lineups to compare against.")
+        return 0, 0
 
     print("\n" + "=" * 80)
     print("LINEUP-BY-LINEUP COMPARISON (Projected vs Actual)")
@@ -288,8 +217,14 @@ def display_lineup_comparison(player_scores, actual_data, predicted_lineups=None
     return best_lineup_num, best_actual_total
 
 
-def display_best_possible_lineup(player_scores):
-    """Find and display the best possible showdown lineup within the salary cap."""
+def display_best_possible_lineup(player_scores, predicted_lineups=None, projected_fppg=None):
+    """Find and display the best possible showdown lineup within the salary cap.
+
+    Args:
+        player_scores: Dict of {name: {"fppg": float, "salary": float, "team": str}}
+        predicted_lineups: Optional list of predicted lineups for efficiency comparison
+        projected_fppg: Optional dict of projected fppg for each player
+    """
     print("\n" + "=" * 80)
     print("BEST POSSIBLE LINEUP (Highest actual fppg within $50,000 salary cap)")
     print("=" * 80)
@@ -317,32 +252,52 @@ def display_best_possible_lineup(player_scores):
     # Compare our best predicted lineup to the theoretical best
     theoretical_best = best_lineups[0]["total_fppg"]
 
-    # Calculate best predicted lineup actual score
-    best_predicted = 0
-    for lineup in PREDICTED_LINEUPS:
-        cap_actual = player_scores.get(lineup["captain"], {}).get("fppg", 0) * 1.5
-        util_actual = sum(player_scores.get(name, {}).get("fppg", 0) for name, _ in lineup["utility"])
-        total = cap_actual + util_actual
-        if total > best_predicted:
-            best_predicted = total
+    if predicted_lineups and projected_fppg:
+        best_predicted = 0
+        for lineup in predicted_lineups:
+            cap_actual = player_scores.get(lineup["captain"], {}).get("fppg", 0) * 1.5
+            util_actual = sum(player_scores.get(name, {}).get("fppg", 0) for name, _ in lineup["utility"])
+            total = cap_actual + util_actual
+            if total > best_predicted:
+                best_predicted = total
 
-    efficiency = (best_predicted / theoretical_best * 100) if theoretical_best > 0 else 0
-    print(f"\n  Our best lineup: {best_predicted:.1f} fppg")
-    print(f"  Theoretical best: {theoretical_best:.1f} fppg")
-    print(f"  Lineup efficiency: {efficiency:.1f}%")
+        efficiency = (best_predicted / theoretical_best * 100) if theoretical_best > 0 else 0
+        print(f"\n  Our best lineup: {best_predicted:.1f} fppg")
+        print(f"  Theoretical best: {theoretical_best:.1f} fppg")
+        print(f"  Lineup efficiency: {efficiency:.1f}%")
+    else:
+        print(f"\n  Theoretical best: {theoretical_best:.1f} fppg")
 
     return theoretical_best
 
 
 def save_results_to_db(player_scores, actual_data, best_lineup_num, best_actual_total,
-                       away_team="NYK", home_team="SAS", date="2026-06-04"):
-    """Save all tracking results to the SQLite database."""
+                       away_team="NYK", home_team="SAS", date="2026-06-04",
+                       game_info=None, predicted_lineups=None, projected_fppg=None):
+    """Save all tracking results to the SQLite database.
+
+    Args:
+        player_scores: Dict of {name: {"fppg": float, "salary": float, "team": str}}
+        actual_data: Dict of actual game data
+        best_lineup_num: Number of the best predicted lineup
+        best_actual_total: Total actual fppg of the best predicted lineup
+        away_team: Away team abbreviation
+        home_team: Home team abbreviation
+        date: Game date in YYYY-MM-DD format
+        game_info: Dict with game confirmation info (final_score, source, etc.)
+        predicted_lineups: List of predicted lineup dicts
+        projected_fppg: Dict of {name: projected_fppg}
+    """
     init_db()
 
     # Save game
+    contest_name = f"NBA Showdown ({away_team} @ {home_team})"
+    if game_info and game_info.get("final_score"):
+        contest_name += f" - {game_info['final_score']}"
+
     game_id = save_game(
         date=date, away_team=away_team, home_team=home_team,
-        contest_name=f"NBA Showdown ({away_team} @ {home_team})",
+        contest_name=contest_name,
         contest_type="showdown"
     )
     print(f"\n  [DB] Saved game: {away_team} @ {home_team} on {date} (id={game_id})")
@@ -350,7 +305,8 @@ def save_results_to_db(player_scores, actual_data, best_lineup_num, best_actual_
     # Save player performances
     saved_players = 0
     for name, data in player_scores.items():
-        projected = PROJECTED_FPPG.get(name, data["fppg"])
+        # Use projected_fppg if available, otherwise estimate from salary
+        proj = projected_fppg.get(name, data["fppg"]) if projected_fppg else data["fppg"]
         actual = data["fppg"]
         team = data["team"]
         salary = data["salary"]
@@ -370,7 +326,7 @@ def save_results_to_db(player_scores, actual_data, best_lineup_num, best_actual_
 
         save_player_performance(
             game_id=game_id, player_name=name, team=team,
-            salary=salary, projected_fppg=projected,
+            salary=salary, projected_fppg=proj,
             actual_fppg=actual, is_starter=starter,
             stats=stats_dict
         )
@@ -378,37 +334,38 @@ def save_results_to_db(player_scores, actual_data, best_lineup_num, best_actual_
 
     print(f"  [DB] Saved {saved_players} player performances")
 
-    # Save predicted lineups
-    for i, lineup in enumerate(PREDICTED_LINEUPS, 1):
-        captain = lineup["captain"]
-        captain_proj = PROJECTED_FPPG.get(captain, 0) * 1.5
-        captain_actual = player_scores.get(captain, {}).get("fppg", 0) * 1.5
+    # Save predicted lineups (if available)
+    if predicted_lineups and projected_fppg:
+        for i, lineup in enumerate(predicted_lineups, 1):
+            captain = lineup["captain"]
+            captain_proj = projected_fppg.get(captain, 0) * 1.5
+            captain_actual = player_scores.get(captain, {}).get("fppg", 0) * 1.5
 
-        total_projected = captain_proj
-        total_actual = captain_actual
-        total_salary = lineup["captain_salary"] * 1.5
-        utility_players = []
+            total_projected = captain_proj
+            total_actual = captain_actual
+            total_salary = lineup["captain_salary"] * 1.5
+            utility_players = []
 
-        for name, salary in lineup["utility"]:
-            proj = PROJECTED_FPPG.get(name, 0)
-            actual = player_scores.get(name, {}).get("fppg", 0)
-            total_projected += proj
-            total_actual += actual
-            total_salary += salary
-            utility_players.append({
-                "name": name, "salary": salary,
-                "projected": proj, "actual": actual
-            })
+            for name, salary in lineup["utility"]:
+                proj = projected_fppg.get(name, 0)
+                actual = player_scores.get(name, {}).get("fppg", 0)
+                total_projected += proj
+                total_actual += actual
+                total_salary += salary
+                utility_players.append({
+                    "name": name, "salary": salary,
+                    "projected": proj, "actual": actual
+                })
 
-        save_lineup(
-            game_id=game_id, lineup_type="predicted", rank=i,
-            captain_name=captain, captain_salary=lineup["captain_salary"],
-            captain_projected=captain_proj, captain_actual=captain_actual,
-            total_projected=total_projected, total_actual=total_actual,
-            total_salary=total_salary, utility_players=utility_players
-        )
+            save_lineup(
+                game_id=game_id, lineup_type="predicted", rank=i,
+                captain_name=captain, captain_salary=lineup["captain_salary"],
+                captain_projected=captain_proj, captain_actual=captain_actual,
+                total_projected=total_projected, total_actual=total_actual,
+                total_salary=total_salary, utility_players=utility_players
+            )
 
-    print(f"  [DB] Saved {len(PREDICTED_LINEUPS)} predicted lineups")
+        print(f"  [DB] Saved {len(predicted_lineups)} predicted lineups")
 
     # Save best possible lineups
     best_lineups = find_best_possible_lineup(player_scores, salary_cap=SALARY_CAP, min_salary=3000, top_n=5)
@@ -464,42 +421,58 @@ def main():
     print(f"{args.away} @ {args.home} | {args.date}")
     print("=" * 80)
 
-    # Fetch game results
-    player_scores, actual_data = fetch_game_results(
-        away_team=args.away, home_team=args.home, date=args.date
-    )
+    # Fetch game results with multi-source verification
+    result = fetch_game_results(away_team=args.away, home_team=args.home, date=args.date)
+
+    if result is None or result[0] is None:
+        print("\n  No game data available. Exiting.")
+        print("  Use --history or --summary to view past tracking data.")
+        return
+
+    player_scores, actual_data, game_info = result
 
     # Display actual scores
     display_actual_scores(player_scores, actual_data)
 
-    # Compare predicted lineups vs actual
-    best_lineup_num, best_actual_total = display_lineup_comparison(player_scores, actual_data)
+    # Try to load predicted lineups from DB for this game
+    # (In production, these would come from the showdown analyzer run before the game)
+    predicted_lineups = None
+    projected_fppg = None
+
+    # Compare predicted lineups vs actual (if available)
+    best_lineup_num, best_actual_total = display_lineup_comparison(
+        player_scores, actual_data, predicted_lineups or [], projected_fppg or {}
+    )
 
     # Display best possible lineup
-    theoretical_best = display_best_possible_lineup(player_scores)
+    theoretical_best = display_best_possible_lineup(
+        player_scores, predicted_lineups=predicted_lineups, projected_fppg=projected_fppg
+    )
 
     # Save results to database
     save_results_to_db(
         player_scores, actual_data, best_lineup_num, best_actual_total,
-        away_team=args.away, home_team=args.home, date=args.date
+        away_team=args.away, home_team=args.home, date=args.date,
+        game_info=game_info,
+        predicted_lineups=predicted_lineups, projected_fppg=projected_fppg
     )
 
     # Summary
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"\n  Best predicted lineup by actual score: Lineup {best_lineup_num} ({best_actual_total:.1f} fppg)")
 
-    # Key observations
-    key_players = ["Josh Hart", "Jalen Brunson", "Victor Wembanyama", "Karl-Anthony Towns"]
-    print(f"\n  Key player observations:")
-    for name in key_players:
-        if name in player_scores:
-            actual = player_scores[name]["fppg"]
-            proj = PROJECTED_FPPG.get(name, 0)
-            diff = actual - proj
-            sign = "+" if diff >= 0 else ""
-            print(f"  - {name}: projected {proj:.1f} fppg, actual {actual:.1f} fppg ({sign}{diff:.1f})")
+    if game_info:
+        print(f"\n  Game: {game_info.get('final_score', 'N/A')}")
+        print(f"  Data source: {game_info.get('source', 'unknown')}")
+
+    print(f"  Players tracked: {len(player_scores)}")
+
+    if predicted_lineups and best_lineup_num > 0:
+        print(f"\n  Best predicted lineup by actual score: Lineup {best_lineup_num} ({best_actual_total:.1f} fppg)")
+
+    if theoretical_best > 0:
+        print(f"  Best possible lineup: {theoretical_best:.1f} fppg")
 
     print(f"\n  Results saved to database. Use --history or --summary to view past data.")
 
