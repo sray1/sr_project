@@ -193,15 +193,16 @@ After games are played, the prediction tracker compares projected vs actual perf
 |------|------|---------|----------------|----------------|------------|
 | Game 1 | 2026-06-03 | NYK @ SAS | — | 249.8 fppg | — |
 | Game 2 | 2026-06-05 | NYK @ SAS | 209.8 fppg | 253.2 fppg | 82.8% |
-| Game 3 | 2026-06-08 | SAS @ NYK | 182.4 fppg | 240.4 fppg | 75.9% |
-| Game 4 | 2026-06-10 | SAS @ NYK | — | 250.0 fppg | — |
+| Game 3 | 2026-06-08 | SAS @ NYK | 182.9 fppg | 240.4 fppg | 76.0% |
+| Game 4 | 2026-06-10 | SAS @ NYK | 226.1 fppg | 250.0 fppg | 90.5% |
 
 **Key learnings from tracking:**
 - **OG Anunoby** was the Game 4 hero: projected 32.5, actual 46.5 (+14.0) — 7 threes including the game-winner
-- **Jalen Brunson** CPT was the best lineup pick in Game 4: projected 219.0, actual 226.1 (+3.3%)
+- **Jalen Brunson CPT** was the best lineup pick in Game 4: projected 219.0, actual 226.1 (+3.3%) — only lineup to exceed projection
 - **Jordan Clarkson** has been a consistent bust: projected 15.2, actual 2.2 in Game 4 (-12.9)
 - **KAT** underperformed in Game 4: projected 47.2, actual 29.0 (-18.2)
-- Starter-only captains significantly outperform cheap captains in high-variance playoff games
+- Game 4 achieved **90.5% efficiency** — best yet, driven by Brunson CPT + Anunoby's breakout
+- Starter captains outperform cheap captains in high-variance playoff games
 
 ## Tests
 
