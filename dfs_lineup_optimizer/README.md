@@ -1,6 +1,6 @@
 # DFS Lineup Optimizer
 
-DraftKings daily fantasy sports lineup prediction and optimization scripts.
+DraftKings daily fantasy sports lineup prediction and tracking system.
 
 ## Setup
 
@@ -10,36 +10,164 @@ uv venv
 uv sync
 ```
 
+## Project Structure
+
+```
+dfs_lineup_optimizer/
+├── comprehensive_analyzer.py         # Main pre-game pipeline (Classic + Showdown)
+├── showdown_analyzer.py              # Showdown-specific pre-game analysis
+├── prediction_tracker.py             # Post-game: compare predictions to actual results
+├── lineup_optimizer.py               # Combinatorial lineup search (showdown + classic)
+├── player_builder.py                 # Build pydfs Player objects from DK draftables
+├── draftkings_scoring.py             # DK NBA scoring rules & stat-line projections
+├── nba_rotations.py                  # NBA depth charts, MPG data, role estimation
+├── contest_detector.py               # Detect Classic vs Showdown contest type
+├── game_results.py                   # Fetch/verify NBA box scores (nba_api + StatMuse)
+├── db.py                             # SQLite tracking database (games, lineups, accuracy)
+├── utils.py                          # Shared utilities (SALARY_CAP, MultiOutput, run_and_save)
+├── projections.py                    # CSV/dict projection data loading
+├── fetch_contests.py                 # Fetch DK contest info & draftable players
+├── list_contests.py                  # List upcoming NBA contests by type
+├── generate_diagram.py               # Generate code-flow PNG for this README
+├── legacy/                            # Superseded analysis scripts
+│   ├── analyze_with_pydfs.py         #   Original classic optimizer (replaced by lineup_optimizer)
+│   ├── analyze_showdown.py           #   Original showdown optimizer (replaced)
+│   └── analyze_with_dff.py           #   Daily Fantasy Fuel integration (replaced)
+└── tests/
+    ├── test_draftkings_scoring.py     # DK scoring calculation tests
+    ├── test_contest_detector.py      # Classic/Showdown detection tests
+    ├── test_game_results.py          # Box score fetch & parse tests
+    └── test_prediction_tracker.py   # End-to-end tracking workflow tests
+```
+
 ## Code Flow
 
 ![DFS Lineup Optimizer Code Flow](code_flow.png)
 
-### Shared Modules
+## Shared Modules
 
-| Module | Purpose |
-|--------|---------|
-| `utils.py` | `MultiOutput`, `SALARY_CAP`, `display_scoring_rules()`, `run_and_save()`, `get_draftkings_client()` |
-| `player_builder.py` | Unified player creation with CPT/UTIL dedup, stat-line matching, rotation metadata, dynamic fallback projections |
-| `lineup_optimizer.py` | Optimal lineup generation via combinatorial enumeration (showdown) and pydfs (classic); deep bench exclusion & min fppg filtering |
+These modules are used by both the pre-game and post-game pipelines:
 
-### Data Flow
+### `utils.py` — Shared utilities
+- `SALARY_CAP = 50000` — Standard DK salary cap constant
+- `MultiOutput` — Dual-stream writer (stdout + file) for saving script output
+- `run_and_save(main_func, prefix)` — Boilerplate wrapper that runs a `main()` function while capturing output to a temp file
+- `get_draftkings_client(max_retries=3)` — DK API client factory with retry logic
+- `display_scoring_rules(contest_type)` — Print DK scoring rules for classic or showdown
 
-#### Pre-game (Predictions)
+### `draftkings_scoring.py` — DK NBA scoring & projections
+- `DKScoringRules` — Dataclass with DK point values (1.0/PT, 1.25/REB, 1.5/AST, 2.0/STL, 2.0/BLK, -0.5/TO, 0.5/3PM, +1.5 DD, +3.0 TD)
+- `PlayerStats` — Dataclass for a player stat line (points, rebounds, assists, steals, blocks, turnovers, three_pointers)
+- `DKScoringCalculator.calculate_fantasy_points(stats)` — Core fppg calculator with milestone bonuses
+- `REALISTIC_STAT_LINES` — Hardcoded stat-line projections keyed by player ID/name
+- `generate_projections_from_salary(salary, positions)` — Fallback projection generator from salary + position
+- `generate_projections_from_rotation(name, team, salary, positions)` — Rotation-aware projection generator using minutes and role
+- `set_stat_lines()` / `get_active_stat_lines()` — Runtime override for custom stat lines
 
-1. **DraftKings API** → Fetch contests, draftable players, and draft group data (with retry logic via `get_draftkings_client()`)
-2. **contest_detector.py** → Classifies each contest as CLASSIC or SHOWDOWN
-3. **draftkings_scoring.py** → Calculates fantasy points using official DK scoring rules; dynamic projections via `generate_projections_from_salary()` and `generate_projections_from_rotation()`
-4. **nba_rotations.py** → NBA depth charts + actual last-15-games MPG for rotation-aware analysis
-5. **player_builder.py** → Creates deduplicated Player objects with fppg, rotation metadata, and minutes data; falls back to rotation-aware salary-based projections when no stat-line match exists
-6. **lineup_optimizer.py** → Exhaustive enumeration of all valid (CPT + 5 UTIL) combinations within salary cap; excludes deep bench and low-fppg punt plays
-7. **showdown_analyzer.py** → Main pipeline: finds highest-entry contest, uses player_builder + lineup_optimizer
+### `nba_rotations.py` — NBA depth charts & minutes
+- `NBA_ROTATIONS` — Dict of all 30 NBA teams with `starting` (5) and `rotation` (8–11) lists
+- `ACTUAL_MPG` — Last-15-games MPG data keyed by `(team_abbr, player_name)` from LandOfBasketball/ESPN/StatMuse
+- `is_starter(name, team)` / `is_rotation_player(name, team)` — Check rotation role
+- `get_rotation_status(name, team)` — Returns `'starter'`, `'rotation'`, or `'none'`
+- `get_estimated_minutes(name, team, salary)` — Last-15 MPG if available, otherwise role-based estimate
+- `get_minutes_weight(minutes)` — Convert MPG to a 0–1 reliability weight for DFS value adjustment
 
-#### Post-game (Verification)
+### `contest_detector.py` — Contest type detection
+- `ContestType` enum — `CLASSIC` or `SHOWDOWN`
+- `ContestInfo` dataclass — Contest ID, name, type, salary cap, roster spots, captain multiplier
+- `detect_contest_type(name)` — Keyword-based detection (showdown/SGP/captain/MVP → SHOWDOWN, else CLASSIC)
+- `get_contest_info(contest_id, name)` — Full contest metadata
+- `display_contest_info(info)` — Pretty-print contest rules
 
-1. **game_results.py** → Confirms game was played (nba_api scoreboard → box score → StatMuse scrape), fetches box scores from nba_api (primary) and StatMuse (secondary), cross-verifies and merges data
-2. **draftkings_scoring.py** → Calculates actual DK fantasy points from box score stats
-3. **prediction_tracker.py** → Compares projected vs actual: runs game confirmation, fetches results, displays lineup comparison, finds theoretical best lineup, saves everything to SQLite
-4. **db.py** → SQLite database for persistent tracking of games, player performances, and lineups across contests
+### `player_builder.py` — Player object factory
+- `create_pydfs_players_with_scoring(draftables, include_rotation_meta, stat_lines, min_salary)` — The central player creation function:
+  1. Iterates DK draftables, skipping disabled and sub-minimum-salary players
+  2. Matches each player to a stat line by ID, then by position + salary proximity
+  3. Falls back to `generate_projections_from_rotation()` then `generate_projections_from_salary()`
+  4. Deduplicates CPT/UTIL entries (keeps lower-salary UTIL version)
+  5. Optionally attaches rotation metadata (`role`, `minutes`, `mpg_actual`)
+  6. Returns `(players, player_meta)` or just `players`
+
+### `lineup_optimizer.py` — Combinatorial lineup search
+- `generate_optimal_showdown_lineups(players, player_meta, n_lineups, ...)` — Exhaustive enumeration of 1-CPT + 5-UTIL combos under salary cap, with role/fppg filters
+- `generate_optimal_showdown_lineups_fast(...)` — Same result with upper-bound pruning for faster execution
+- `generate_classic_lineups(players, n_lineups)` — Wraps `pydfs_lineup_optimizer` for 8-player classic contests
+- `find_best_possible_showdown_lineup(player_scores, ...)` — Post-game only: find theoretical best lineup from actual fppg (used by `prediction_tracker`)
+
+### `game_results.py` — Multi-source box score fetching
+- `confirm_game_played(date, away, home)` — Checks if game was played (nba_api scoreboard → box score → StatMuse)
+- `fetch_box_score(date, home_team, away_team)` — Primary: nba_api BoxScoreTraditionalV3 (or V2 fallback)
+- `fetch_statmuse_box_score(date, away, home)` — Secondary: scrapes StatMuse game page via requests
+- `verify_box_score(primary, secondary)` — Cross-verifies and merges data from both sources (prefers StatMuse on discrepancy)
+- `find_best_possible_lineup(player_scores, ...)` — Delegates to `lineup_optimizer`
+- `_normalize_player_name(short_name, team)` — Maps nba_api abbreviated names to full names using `NBA_NAME_MAP` and rotation data
+
+### `db.py` — SQLite tracking database (`dfs_results.db`)
+- **Tables:** `games` (date, teams, contest type), `player_performances` (projected vs actual fppg), `lineups` (predicted and best-possible lineups with totals)
+- `save_game()` / `save_player_performance()` / `save_lineup()` — Write operations (all idempotent for games)
+- `get_game_history(limit)` / `get_game_details(game_id)` / `get_accuracy_summary()` — Read operations for historical tracking
+- `display_history()` / `display_accuracy_summary()` / `display_player_history(name)` — Pretty-printed console output
+- `init_db()` — Creates tables if they don't exist (called automatically by scripts)
+
+### `projections.py` — External projection loading
+- `ProjectionManager` — Load projections from CSV or dict, merge with DK draftable players, get top value plays
+- `demo_projection_integration()` — Interactive demo using live DK data
+
+## Data Flow
+
+### Pre-game pipeline (lineup generation)
+
+```
+DK API (contests + draftables)
+  │
+  ├── list_contests.py ─────▶ Print upcoming Classic/Showdown contests
+  ├── fetch_contests.py ────▶ Print contest details + draftable players
+  │
+  ▼
+comprehensive_analyzer.py (auto-detects type)  OR  showdown_analyzer.py (showdown-only)
+  │
+  ├── contest_detector.py ──▶ Classic or Showdown rules + salary cap
+  │
+  ├── player_builder.py ────▶ Creates pydfs Player objects
+  │     ├── draftkings_scoring.py ──▶ fppg from stat lines (ID match → position/salary fallback → rotation fallback)
+  │     └── nba_rotations.py ──────▶ role (starter/rotation/none), estimated minutes, minutes weight
+  │
+  ├── lineup_optimizer.py ──▶ Optimal 5 lineups
+  │     ├── Showdown: exhaustive 1-CPT × C(5 from N) enumeration, $50k cap
+  │     │     Filters: min_util_salary, min_util_fppg, exclude_roles
+  │     └── Classic: pydfs_lineup_optimizer (8 spots, position requirements)
+  │
+  └── db.py ────────────────▶ Save game + player projections + predicted lineups
+```
+
+### Post-game pipeline (accuracy tracking)
+
+```
+prediction_tracker.py (--away NYK --home SAS --date 2026-06-08)
+  │
+  ├── game_results.py
+  │     ├── confirm_game_played() ──▶ nba_api scoreboard → StatMuse → "played: true/false"
+  │     ├── fetch_box_score() ──────▶ nba_api BoxScoreV3 (primary)
+  │     ├── fetch_statmuse_box_score() ──▶ StatMuse HTML scrape (backup)
+  │     └── verify_box_score() ──────▶ Cross-verify + merge (prefer StatMuse on conflict)
+  │
+  ├── draftkings_scoring.py ──▶ Calculate actual fppg from box score stats
+  │
+  ├── lineup_optimizer.py
+  │     └── find_best_possible_showdown_lineup() ──▶ Exhaustive search for theoretical optimal
+  │
+  ├── Display: actual scores, predicted-vs-actual comparison, best-possible lineup, efficiency %
+  │
+  └── db.py ──▶ Save player actuals + predicted lineups (with actuals) + best-possible lineups + efficiency metrics
+```
+
+### Historical queries
+
+```
+prediction_tracker.py --history   ──▶ db.display_history()      (recent games + accuracy)
+prediction_tracker.py --summary   ──▶ db.display_accuracy_summary() (aggregate stats)
+prediction_tracker.py --player "Jalen Brunson" ──▶ db.display_player_history() (per-player projection accuracy)
+```
 
 ## Usage
 
@@ -51,67 +179,49 @@ uv sync
 3. (After game) Run tracker → compare predictions vs actual results
 ```
 
-### 1. List Upcoming Contests
+### Pre-game: generate lineups
 
-```bash
-python dfs_lineup_optimizer/list_contests.py
-```
+```powershell
+# Auto-detect contest type (Showdown or Classic) and run full analysis
+python dfs_lineup_optimizer/comprehensive_analyzer.py
 
-Finds the NBA Showdown contest with the most entries and displays contest details.
-
-### 2. Showdown Analyzer (Generate Lineups)
-
-```bash
-# Auto-select highest-entry showdown contest
+# Showdown-only analysis with rotation metadata and captain optimization
 python dfs_lineup_optimizer/showdown_analyzer.py
 
-# Specify a draft group ID
-python dfs_lineup_optimizer/showdown_analyzer.py 148630
+# List upcoming NBA contests (type, entries, start time)
+python dfs_lineup_optimizer/list_contests.py
+
+# Fetch DK contest details and draftable players
+python dfs_lineup_optimizer/fetch_contests.py
+
+# Display DK scoring breakdown for a sample player
+python dfs_lineup_optimizer/draftkings_scoring.py
 ```
 
-**Output:**
-- Selects the showdown contest with the most entries
-- Deduplicates CPT/UTIL player entries (keeps base salary)
-- Generates 5 **optimal** lineups via combinatorial enumeration (guaranteed best within search space)
-- **Excludes deep bench** players (role='none') from all lineups
-- **Excludes low-production punt plays** (min fppg < 7.0) with inflated value ratios
-- Player value rankings sorted by adjusted value (minutes-weighted)
-- Role-separated views: Starters (30+ min), Rotation (18-25 min), Deep Bench (<10 min)
-- Captain optimization analysis prioritizing starters by adjusted value
-- Results saved to `dfs_lineup_optimizer/output/`
+### Post-game: track predictions vs actuals
 
-### 3. Prediction Tracker (After Game)
+```powershell
+# Track a specific game (defaults: NYK @ SAS on 2026-06-04)
+python dfs_lineup_optimizer/prediction_tracker.py
 
-```bash
-# Run tracker for a specific game
-python dfs_lineup_optimizer/prediction_tracker.py --away SAS --home NYK --date 2026-06-10
+# Track a different game
+python dfs_lineup_optimizer/prediction_tracker.py --away SAS --home NYK --date 2026-06-08
 
-# View history or summary
+# View historical tracking data
 python dfs_lineup_optimizer/prediction_tracker.py --history
+
+# View aggregate accuracy summary across all tracked games
 python dfs_lineup_optimizer/prediction_tracker.py --summary
 
-# Specific player accuracy
+# View per-player projection history
 python dfs_lineup_optimizer/prediction_tracker.py --player "Jalen Brunson"
 ```
 
-**Flow:**
-1. Confirms game was played (nba_api scoreboard → box score → StatMuse)
-2. Fetches box score from nba_api (primary), StatMuse (secondary)
-3. Cross-verifies stats between sources, merges best data
-4. Displays actual DK fantasy points for all players
-5. Finds theoretical best lineup from actual results
-6. Saves everything to SQLite database
+### Run tests
 
-### 4. Fetch Contests (Low-level)
-
-```bash
-python dfs_lineup_optimizer/fetch_contests.py
-```
-
-### 5. Comprehensive Analysis (Alternative)
-
-```bash
-python dfs_lineup_optimizer/comprehensive_analyzer.py
+```powershell
+cd dfs_lineup_optimizer
+python -m pytest tests/ -v
 ```
 
 ## Scoring Rules
@@ -187,30 +297,57 @@ After games are played, the prediction tracker compares projected vs actual perf
 - **Efficiency score** — ratio of our best predicted lineup to the theoretical best
 - **SQLite database** — tracks results across multiple games for long-term accuracy analysis
 
-### Historical Results (NYK vs SAS 2026 NBA Finals)
+## Historical Results
 
-| Game | Date | Matchup | Best Predicted | Best Possible | Efficiency |
-|------|------|---------|----------------|----------------|------------|
-| Game 1 | 2026-06-03 | NYK @ SAS | — | 249.8 fppg | — |
-| Game 2 | 2026-06-05 | NYK @ SAS | 209.8 fppg | 253.2 fppg | 82.8% |
-| Game 3 | 2026-06-08 | SAS @ NYK | 182.9 fppg | 240.4 fppg | 76.0% |
-| Game 4 | 2026-06-10 | SAS @ NYK | 226.1 fppg | 250.0 fppg | 90.5% |
+### All Tracked Games (NYK vs SAS 2026 NBA Finals)
 
-**Key learnings from tracking:**
+| # | Date | Matchup | Best Predicted | Best Possible | Efficiency | Best Captain |
+|---|------|---------|---------------|--------------|-----------|--------------|
+| 1 | Jun 3 | NYK @ SAS | — | 249.8 | — | No predictions saved |
+| 2 | Jun 5 | NYK @ SAS | 209.8 | 253.2 | 82.8% | — |
+| 3 | Jun 8 | SAS @ NYK | 182.4 | 240.4 | 75.9% | — |
+| 4 | Jun 10 | SAS @ NYK | 160.8 | 250.0 | 64.3% | — |
+| 5 | Jun 13 | NYK @ SAS | 135.2 | 249.9 | 54.1% | Josh Hart (CPT) |
+
+**Average across all tracked games: 69.3% efficiency**
+
+### Game 5 Breakdown (NYK 94 @ SAS 90)
+
+| Lineup | Captain | Projected | Actual | Diff | Efficiency | Grade |
+|--------|---------|-----------|--------|------|-----------|-------|
+| 1 | Karl-Anthony Towns | 223.9 | 135.2 | -88.7 | 54.1% | F |
+| 2 | Karl-Anthony Towns | 222.6 | 183.9 | -38.6 | 73.6% | C |
+| 3 | Stephon Castle | 222.2 | 146.6 | -75.6 | 58.7% | F |
+| 4 | Josh Hart ⭐ | 222.0 | 195.5 | -26.5 | **78.2%** | C+ |
+| 5 | Victor Wembanyama | 222.0 | 152.9 | -69.0 | 61.2% | D |
+
+**Key bust:** KAT projected 70.8 CPT fppg → actual 32.2 (2 PTS, 10 REB, 5 TO). The 1.5x captain multiplier amplified this massively across Lineups 1–4.
+
+**Key hit:** Jalen Brunson projected 47.2 → actual 57.8 (+10.6, 45 PTS).
+
+Efficiency = (best predicted lineup actual fppg) / (theoretical best possible fppg) × 100
+
+### Key Learnings from Tracking
+
 - **OG Anunoby** was the Game 4 hero: projected 32.5, actual 46.5 (+14.0) — 7 threes including the game-winner
-- **Jalen Brunson CPT** was the best lineup pick in Game 4: projected 219.0, actual 226.1 (+3.3%) — only lineup to exceed projection
-- **Jordan Clarkson** has been a consistent bust: projected 15.2, actual 2.2 in Game 4 (-12.9)
-- **KAT** underperformed in Game 4: projected 47.2, actual 29.0 (-18.2)
-- Game 4 achieved **90.5% efficiency** — best yet, driven by Brunson CPT + Anunoby's breakout
+- **Jalen Brunson** was the Game 5 standout: projected 47.2, actual 57.8 (+10.6) — 45 PTS
+- **Jordan Clarkson** has been a consistent bust: projected 15.2, actual 2.2 in Game 4 (-12.9), 3.2 in Game 5 (-12.0)
+- **KAT** underperformed heavily in Game 5: projected 47.2, actual 21.5 (-25.7); as CPT, the 1.5x multiplier turned a bad game into a lineup-killer
+- Efficiency has trended down across the series (82.8% → 75.9% → 64.3% → 54.1%), primarily driven by captain busts
 - Starter captains outperform cheap captains in high-variance playoff games
 
 ## Tests
 
 ```bash
-python -m pytest dfs_lineup_optimizer/tests/ -v
+python -m pytest tests/ -v
 ```
 
-65 tests covering DK scoring, contest detection, StatMuse parsing, game confirmation, box score verification, and prediction tracker flow.
+| File | Tests | Coverage |
+|------|-------|----------|
+| `tests/test_draftkings_scoring.py` | 11 | DK scoring calculations, bonuses, edge cases |
+| `tests/test_contest_detector.py` | 14 | Showdown/Classic detection, contest info |
+| `tests/test_game_results.py` | 23 | Name normalization, StatMuse URL/parsing, cross-verification, HTML parsing |
+| `tests/test_prediction_tracker.py` | 17 | Game confirmation, lineup comparison, best lineup, game info flow |
 
 ## Output
 
@@ -238,15 +375,6 @@ nba_showdown_2026-06-10_004221.txt
 | `lineup_optimizer.py` | Optimal lineup generation (combinatorial for showdown, pydfs for classic) |
 | `utils.py` | Shared utilities: output, scoring rules, API client |
 | `projections.py` | Projection data integration and value play analysis |
-
-### Test Suite
-
-| File | Tests | Coverage |
-|------|-------|----------|
-| `tests/test_draftkings_scoring.py` | 11 | DK scoring calculations, bonuses, edge cases |
-| `tests/test_contest_detector.py` | 14 | Showdown/Classic detection, contest info |
-| `tests/test_game_results.py` | 23 | Name normalization, StatMuse URL/parsing, cross-verification, HTML parsing |
-| `tests/test_prediction_tracker.py` | 17 | Game confirmation, lineup comparison, best lineup, game info flow |
 
 ## Key Concepts
 
@@ -276,4 +404,4 @@ nba_showdown_2026-06-10_004221.txt
 - Dynamic projections use position-aware salary scaling when no curated stat lines match a player
 - BKN team ID fixed from 1610612741 (was colliding with CHI) to correct 1610612751
 - Prediction tracker uses multi-source verification: confirms game was played before fetching results, cross-verifies nba_api and StatMuse data
-- Tests are located in `dfs_lineup_optimizer/tests/` and can be run with `python -m pytest dfs_lineup_optimizer/tests/ -v`
+- Tests are located in `dfs_lineup_optimizer/tests/` and can be run with `python -m pytest tests/ -v`
