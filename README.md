@@ -257,9 +257,28 @@ python -m pytest tests/ -v
 
 ### Historical Results
 
-| Game | Best Predicted (fppg) | Best Possible (fppg) | Efficiency |
-|------|----------------------|---------------------|-----------|
-| NYK @ SAS (Game 1) | 268.1 | 296.2 | 90.5% |
-| NYK @ SAS (Game 4) | 254.3 | 281.0 | 90.5% |
+| # | Date | Matchup | Best Predicted | Best Possible | Efficiency | Best Captain |
+|---|------|---------|---------------|--------------|-----------|--------------|
+| 1 | Jun 3 | NYK @ SAS | — | 249.8 | — | No predictions saved |
+| 2 | Jun 5 | NYK @ SAS | 209.8 | 253.2 | 82.8% | — |
+| 3 | Jun 8 | SAS @ NYK | 182.4 | 240.4 | 75.9% | — |
+| 4 | Jun 10 | SAS @ NYK | 160.8 | 250.0 | 64.3% | — |
+| 5 | Jun 13 | NYK @ SAS | 135.2 | 249.9 | 54.1% | Josh Hart (CPT) |
+
+**Average across all tracked games: 69.3% efficiency**
+
+#### Game 5 Breakdown (NYK 94 @ SAS 90)
+
+| Lineup | Captain | Projected | Actual | Diff | Efficiency | Grade |
+|--------|---------|-----------|--------|------|-----------|-------|
+| 1 | Karl-Anthony Towns | 223.9 | 135.2 | -88.7 | 54.1% | F |
+| 2 | Karl-Anthony Towns | 222.6 | 183.9 | -38.6 | 73.6% | C |
+| 3 | Stephon Castle | 222.2 | 146.6 | -75.6 | 58.7% | F |
+| 4 | Josh Hart ⭐ | 222.0 | 195.5 | -26.5 | **78.2%** | C+ |
+| 5 | Victor Wembanyama | 222.0 | 152.9 | -69.0 | 61.2% | D |
+
+**Key bust:** KAT projected 70.8 CPT fppg → actual 32.2 (2 PTS, 10 REB, 5 TO). The 1.5x captain multiplier amplified this massively across Lineups 1–4.
+
+**Key hit:** Jalen Brunson projected 47.2 → actual 57.8 (+10.6, 45 PTS).
 
 Efficiency = (best predicted lineup actual fppg) / (theoretical best possible fppg) × 100
