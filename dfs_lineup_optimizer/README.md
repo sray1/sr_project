@@ -304,12 +304,12 @@ After games are played, the prediction tracker compares projected vs actual perf
 | # | Date | Matchup | Best Predicted | Best Possible | Efficiency | Best Captain |
 |---|------|---------|---------------|--------------|-----------|--------------|
 | 1 | Jun 3 | NYK @ SAS | — | 249.8 | — | No predictions saved |
-| 2 | Jun 5 | NYK @ SAS | 209.8 | 253.2 | 82.8% | — |
-| 3 | Jun 8 | SAS @ NYK | 182.4 | 240.4 | 75.9% | — |
-| 4 | Jun 10 | SAS @ NYK | 160.8 | 250.0 | 64.3% | — |
-| 5 | Jun 13 | NYK @ SAS | 135.2 | 249.9 | 54.1% | Josh Hart (CPT) |
+| 2 | Jun 5 | NYK @ SAS | 209.8 | 253.2 | 82.8% | Landry Shamet (CPT) |
+| 3 | Jun 8 | SAS @ NYK | 182.9 | 240.4 | 76.1% | Mikal Bridges (CPT) |
+| 4 | Jun 10 | SAS @ NYK | 226.1 | 250.0 | 90.5% | Jalen Brunson (CPT) |
+| 5 | Jun 13 | NYK @ SAS | 195.5 | 249.9 | 78.2% | Josh Hart (CPT) |
 
-**Average across all tracked games: 69.3% efficiency**
+**Average across all tracked games: 81.9% efficiency**
 
 ### Game 5 Breakdown (NYK 94 @ SAS 90)
 
@@ -329,11 +329,11 @@ Efficiency = (best predicted lineup actual fppg) / (theoretical best possible fp
 
 ### Key Learnings from Tracking
 
-- **OG Anunoby** was the Game 4 hero: projected 32.5, actual 46.5 (+14.0) — 7 threes including the game-winner
-- **Jalen Brunson** was the Game 5 standout: projected 47.2, actual 57.8 (+10.6) — 45 PTS
-- **Jordan Clarkson** has been a consistent bust: projected 15.2, actual 2.2 in Game 4 (-12.9), 3.2 in Game 5 (-12.0)
-- **KAT** underperformed heavily in Game 5: projected 47.2, actual 21.5 (-25.7); as CPT, the 1.5x multiplier turned a bad game into a lineup-killer
-- Efficiency has trended down across the series (82.8% → 75.9% → 64.3% → 54.1%), primarily driven by captain busts
+- **Game 4 (90.5%)** was our best efficiency — Jalen Brunson CPT projected 219.0, actual 226.1 (+3.3%). OG Anunoby was the hero: projected 32.5, actual 46.5 (+14.0) with 7 threes including the game-winner
+- **Game 5 (78.2%)** best lineup had Josh Hart CPT — Hart hit his projection (44.2→48.3) while Brunson exceeded his (+10.6, 45 PTS). KAT as CPT was the bust: 70.8 projected → 32.2 actual
+- **Jordan Clarkson** has been a consistent bust across the series: projected 15.2, actual 2.2 in Game 4 (-12.9), 3.2 in Game 5 (-12.0)
+- **KAT** underperformed heavily in Games 4–5: projected 47.2, actual 29.0 (-18.2) in Game 4, actual 21.5 (-25.7) in Game 5
+- **Brunson CPT** was the best single captain pick: 90.5% efficiency in Game 4
 - Starter captains outperform cheap captains in high-variance playoff games
 
 ## Tests
