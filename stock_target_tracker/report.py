@@ -1382,6 +1382,27 @@ h2 {{ font-size: 1.3rem; font-weight: 600; margin-bottom: 16px; color: var(--acc
 .method-table td.method {{ font-size: 0.8rem; color: var(--text-dim); line-height: 1.5; }}
 .method-table td.num {{ font-variant-numeric: tabular-nums; }}
 
+/* Collapsed analyst-firm aggregate row (chip cloud behind a <details>). */
+.method-table tr.firm-aggregate td {{ padding: 0; }}
+.method-table tr.firm-aggregate details {{ padding: 10px 14px; }}
+.method-table tr.firm-aggregate summary {{
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px;
+  font-size: 0.85rem;
+}}
+.method-table tr.firm-aggregate summary::-webkit-details-marker {{ display: none; }}
+.method-table tr.firm-aggregate summary::before {{
+  content: '▸'; color: var(--text-dim); transition: transform .15s; display: inline-block; font-size: 0.7rem;
+}}
+.method-table tr.firm-aggregate details[open] summary::before {{ transform: rotate(90deg); }}
+.fa-title {{ font-weight: 600; color: var(--text); }}
+.fa-meta {{ font-size: 0.78rem; color: var(--text-dim); }}
+.firm-chips {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }}
+.firm-chip {{
+  font-size: 0.72rem; background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+  border-radius: 5px; padding: 2px 7px; color: var(--text-dim); white-space: nowrap;
+}}
+.firm-chip b {{ color: var(--text); font-variant-numeric: tabular-nums; }}
+
 /* Whole-window references (where the evaluation measures come from) */
 .ww-refs {{
   margin-top: 14px;
@@ -1769,7 +1790,42 @@ function renderMethodology() {{
     }}).join('');
   }}
 
-  // Compact org table: Org | Type | # Targets | Sources.
+  // Compact org table. Consensus orgs (Yahoo/FMP/oanor — varied sources) stay
+  // as full rows. The long tail of individual analyst firms (almost always
+  // MarketBeat, differing only by name + target count) collapse into ONE
+  // expandable row (chip cloud) so the table needs no scroll.
+  const consensus = rows.filter(r => r.org_type === 'Consensus');
+  const firms = rows.filter(r => r.org_type !== 'Consensus');
+
+  const consensusRows = consensus.map(r => {{
+    const sources = (r.sources || []).join(', ');
+    return `
+      <tr>
+        <td class="org">${{r.org}}</td>
+        <td><span class="type-pill type-consensus">Consensus</span></td>
+        <td class="num">${{r.target_count}}</td>
+        <td style="font-size:0.78rem;color:var(--text-dim)">${{sources}}</td>
+      </tr>`;
+  }}).join('');
+
+  const firmTotal = firms.reduce((s, r) => s + (r.target_count || 0), 0);
+  const firmSources = [...new Set(firms.flatMap(r => r.sources || []))].join(', ');
+  const firmRow = firms.length ? `
+    <tr class="firm-aggregate">
+      <td colspan="4">
+        <details>
+          <summary>
+            <span class="type-pill type-firm">Analyst firm</span>
+            <span class="fa-title">${{firms.length}} analyst firms</span>
+            <span class="fa-meta">${{firmTotal}} targets${{firmSources ? ' &middot; ' + firmSources : ''}}</span>
+          </summary>
+          <div class="firm-chips">
+            ${{firms.map(r => `<span class="firm-chip">${{r.org}} <b>${{r.target_count}}</b></span>`).join('')}}
+          </div>
+        </details>
+      </td>
+    </tr>` : '';
+
   el.innerHTML = `
     <colgroup>
       <col style="width:34%"><col style="width:16%"><col style="width:12%"><col style="width:38%">
@@ -1778,18 +1834,7 @@ function renderMethodology() {{
       <tr><th>Analyst Org</th><th>Type</th><th># Targets</th><th>Sources</th></tr>
     </thead>
     <tbody>
-      ${{rows.map(r => {{
-        const pill = r.org_type === 'Consensus' ? 'type-consensus' : 'type-firm';
-        const sources = (r.sources || []).join(', ');
-        return `
-          <tr>
-            <td class="org">${{r.org}}</td>
-            <td><span class="type-pill ${{pill}}">${{r.org_type}}</span></td>
-            <td class="num">${{r.target_count}}</td>
-            <td style="font-size:0.78rem;color:var(--text-dim)">${{sources}}</td>
-          </tr>
-        `;
-      }}).join('')}}
+      ${{consensusRows}}${{firmRow}}
     </tbody>
   `;
 }}

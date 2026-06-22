@@ -104,6 +104,16 @@ def _scrape_marketbeat(symbol, exchange_prefix=''):
         header_cells = rows[0].find_all(['th', 'td'])
         header_text = ' '.join(cell.get_text(strip=True).lower() for cell in header_cells)
 
+        # Skip fundamentals / holdings / comparable-company tables. On ETF
+        # pages (e.g. MSOS) MarketBeat shows a table of *other* companies with
+        # their consensus targets (columns Company / Sector / Current Price /
+        # Market Cap / ...), not analyst targets for this symbol. Parsing it
+        # would store each holding's name as an "analyst firm".
+        if any(kw in header_text for kw in (
+                'sector', 'market cap', 'p/e', 'current price',
+                'portfolio', 'weight', 'constituent', 'shares')):
+            continue
+
         if 'price' not in header_text or 'target' not in header_text:
             # Also try tables that mention 'rating' or 'analyst'
             if 'rating' not in header_text and 'analyst' not in header_text:
@@ -197,6 +207,17 @@ def _parse_rating_row(cells):
     if target_price is None:
         return None  # No target price found — not useful
 
+    # Reject / clean junk firm names from malformed table rows (ETF holdings
+    # lists, rating-action labels leaking into the firm column).
+    cls = _classify_firm(firm)
+    if cls == 'holdings_junk':
+        return None  # not an analyst target — a scraped holdings/price cell
+    if cls == 'action_word':
+        firm = None  # keep the target, but the firm wasn't really parsed
+    if firm:
+        # Strip a glued-on "Not Rated" suffix (e.g. "Arete ResearchNot Rated").
+        firm = re.sub(r'\s*Not Rated\s*$', '', firm).strip() or None
+
     return {
         'source': 'marketbeat',
         'target_price': target_price,
@@ -214,6 +235,57 @@ def _text_lower_matches_rating(text_lower):
              'neutral', 'equal weight', 'underperform', 'underweight',
              'sell', 'strong sell', 'market perform', 'sector perform']
     return any(kr in text_lower for kr in known)
+
+
+# ── Junk-firm detection ─────────────────────────────────────────────────────
+# MarketBeat's page structure differs for ETFs (e.g. MSOS), where the scraper
+# can latch onto a holdings / related-securities table instead of the analyst
+# price-target table. That produces "firm" values that are really holding
+# tickers glued to company names ("AAPLApple", "NVDANVIDIA", "QQQInvesco QQQ"),
+# bare prices ("16.60"), or rating-action labels ("Downgrade"). These filters
+# keep such junk out of the database.
+
+# A bare price / number ("16.60", "1,234.50").
+_PURE_NUMBER = re.compile(r'^[\d.,$]+$')
+
+# A rating-action label leaked into the firm column (exact match, so legit
+# firms like "JPMorgan" or "Holdings" are never caught).
+_ACTION_WORD = re.compile(
+    r'^(downgrad(e|ed|es)?|upgrades?|initiated(\s+coverage)?|'
+    r'reiterated(\s+rating)?|resumed?|repeated?|maintained?|coverage|'
+    r'target|rating|hold|buy|sell|neutral)$',
+    re.I,
+)
+
+# A fund / ETF issuer or "ETF" token — these are holdings, not analyst firms.
+# (Only unambiguous tokens are used; ticker+company glue like "AAPLApple" is
+# prevented upstream by the holdings-table header check, not matched here,
+# since such patterns can't be reliably told apart from real firms like
+# "JPMorgan".)
+_FUND_KEYWORD = re.compile(r'(iShares|Invesco|Vanguard|VanEck|WisdomTree|'
+                          r'ProShares|SPDR|\bETF\b)', re.I)
+
+
+def _classify_firm(firm):
+    """Classify a scraped analyst_firm value.
+
+    Returns one of:
+      - 'good'          : a plausible firm name (or None) — keep as-is.
+      - 'holdings_junk' : a scraped holdings/price cell — drop the whole row
+                          (it is not an analyst target for this symbol).
+      - 'action_word'   : a rating-action label — keep the target (its price
+                          may be legitimate) but drop the firm attribution.
+    """
+    if not firm:
+        return 'good'
+    f = firm.strip()
+    if _PURE_NUMBER.match(f):
+        return 'holdings_junk'
+    if _FUND_KEYWORD.search(f):
+        return 'holdings_junk'
+    if _ACTION_WORD.match(f):
+        return 'action_word'
+    return 'good'
 
 
 class _MarketBeatBlocked(Exception):
