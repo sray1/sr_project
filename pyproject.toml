@@ -4,12 +4,16 @@ version = "0.1.0"
 description = "Shonket's project"
 requires-python = ">=3.11"
 dependencies = [
+    "apscheduler>=3.11.2",
+    "beautifulsoup4>=4.15.0",
     "draft-kings>=3.1.0",
     "matplotlib>=3.10.9",
     "nba-api>=1.11.4",
     "numpy>=2.0.0",
     "pandas>=3.0.0",
     "pydfs-lineup-optimizer>=3.6.1",
+    "python-dotenv>=1.2.2",
+    "yfinance>=1.4.1",
 ]
 
 [dependency-groups]

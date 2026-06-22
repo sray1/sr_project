@@ -6,17 +6,18 @@ in priority order, aggregates results, and logs per-source success/failure.
 Follows the same multi-source pattern as the DFS project's game_results.py.
 """
 
-from sources import yahoo_finance, fmp, marketbeat
+from sources import yahoo_finance, fmp, marketbeat, oanor
 
 # Source modules keyed by name
 SOURCES = {
     "yahoo_finance": yahoo_finance,
     "fmp": fmp,
+    "oanor": oanor,
     "marketbeat": marketbeat,
 }
 
 # Default priority order (most reliable first)
-SOURCE_PRIORITY = ["yahoo_finance", "fmp", "marketbeat"]
+SOURCE_PRIORITY = ["yahoo_finance", "fmp", "oanor", "marketbeat"]
 
 
 def fetch_all_targets(symbol, sources=None):

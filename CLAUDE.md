@@ -30,6 +30,7 @@ python test_numpy_pandas.py
 - `fibonacci.py` - Fibonacci number implementation with `fibonacci(n)` and `fibonacci_sequence(count)` functions
 - `test_numpy_pandas.py` - Comprehensive test script for NumPy and Pandas functionality
 - `dfs_lineup_optimizer/` - DraftKings daily fantasy sports lineup prediction scripts
+- `stock_target_tracker/` - Stock analyst target price tracker (multi-source fetch, accuracy tracking)
 - `pyproject.toml` - Project configuration (Python 3.11+, NumPy 2.0+, Pandas 3.0+)
 
 ## Project Purpose

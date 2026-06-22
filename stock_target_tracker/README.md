@@ -67,14 +67,19 @@ script header for details.
 |--------|--------|-----------------|------------|
 | Yahoo Finance | `yfinance` library + scraping fallback | No | 0.5-1s between requests |
 | Financial Modeling Prep | REST API | Yes (`FMP_API_KEY` env var) | 0.3s between calls (250/day free tier) |
+| oanor | REST API | Yes (`OANOR_API_KEY` env var) | 1s between calls (free tier) |
 | MarketBeat | Web scraping | No | 2-3s between requests (bot detection) |
 
-### Setting up FMP API Key
+### Setting up API Keys
 
-1. Get a free API key at [financialmodelingprep.com](https://financialmodelingprep.com/)
-2. Create a `.env` file in the project root:
+Get free keys and add them to a `.env` file in the project root (which is
+gitignored, so keys stay local):
+
+1. **FMP** — free key at [financialmodelingprep.com](https://financialmodelingprep.com/). Gives consensus + period-averaged targets.
+2. **oanor** — free key at [oanor.com](https://www.oanor.com/) (Analyst API). Gives Nasdaq-sourced consensus + a month-by-month dated target timeline.
    ```
-   FMP_API_KEY=your_api_key_here
+   FMP_API_KEY=your_fmp_key_here
+   OANOR_API_KEY=your_oanor_key_here
    ```
 
 ## Input CSV (Whitelist)

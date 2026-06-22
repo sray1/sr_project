@@ -19,12 +19,13 @@ leak into latest.html).
 Usage:
     python stock_target_tracker/refresh.py --mode portfolio
     python stock_target_tracker/refresh.py --mode sample
-    python stock_target_tracker/refresh.py --mode portfolio --full      # also MarketBeat
+    python stock_target_tracker/refresh.py --mode portfolio --full      # also oanor + MarketBeat
     python stock_target_tracker/refresh.py --mode sample --source marketbeat
 
 --source defaults to yahoo_finance (fast). Use --full to additionally fetch
-MarketBeat dated targets (slow, bot-detected) which fill the accuracy/analyst
-sections of each card. The fetch/prices/accuracy/report steps reuse tracker.py
+dated targets from oanor (reliable API) and MarketBeat (richer but bot-detected
+scraping) which fill the accuracy/analyst sections of each card. The
+fetch/prices/accuracy/report steps reuse tracker.py
 and report.py via the normal CLI, with STT_DB_PATH set only for sample mode.
 """
 
@@ -67,7 +68,7 @@ def main():
     p.add_argument("--source", default="yahoo_finance",
                    help="Primary target source (default: yahoo_finance). Use 'marketbeat' for dated targets.")
     p.add_argument("--full", action="store_true",
-                   help="Also fetch MarketBeat dated targets (in addition to --source).")
+                   help="Also fetch dated targets from oanor + MarketBeat (in addition to --source).")
     p.add_argument("--no-fetch", action="store_true",
                    help="Skip fetch; just refresh prices + accuracy + report.")
     args = p.parse_args()
@@ -97,9 +98,13 @@ def main():
     if not args.no_fetch:
         run([PY, TRACKER, "fetch", "--csv", csv, "--source", args.source], env,
             f"fetch targets ({args.source})")
-        if args.full and args.source != "marketbeat":
-            run([PY, TRACKER, "fetch", "--csv", csv, "--source", "marketbeat"], env,
-                "fetch targets (marketbeat, dated)")
+        if args.full:
+            # Dated-target sources (reliable first, fragile last).
+            for dated in ("oanor", "marketbeat"):
+                if args.source == dated:
+                    continue  # already fetched as the primary source
+                run([PY, TRACKER, "fetch", "--csv", csv, "--source", dated], env,
+                    f"fetch targets ({dated}, dated)")
 
     run([PY, TRACKER, "prices", "--csv", csv], env, "prices")
     run([PY, TRACKER, "accuracy"], env, "accuracy")
