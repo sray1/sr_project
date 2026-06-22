@@ -55,3 +55,4 @@ python test_numpy_pandas.py
 - `test_numpy_pandas.py` - Test script for NumPy and Pandas
 - `pyproject.toml` - Project configuration and dependencies
 - [`dfs_lineup_optimizer/`](dfs_lineup_optimizer/README.md) - DraftKings DFS lineup prediction and tracking system (see [full README](dfs_lineup_optimizer/README.md))
+- [`stock_target_tracker/`](stock_target_tracker/README.md) - Stock analyst target-price tracker: multi-source fetch (Yahoo, FMP, oanor, MarketBeat), SQLite storage, and 30/90/180/365-day accuracy tracking. Live (sample) report: https://sray1.github.io/sr_project/ (see [full README](stock_target_tracker/README.md))
