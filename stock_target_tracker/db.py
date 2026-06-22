@@ -11,8 +11,13 @@ import json
 import os
 from datetime import datetime, timezone
 
-# Database file path (same directory as this module)
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracker.db")
+# Database file path (same directory as this module). Override with the STT_DB_PATH
+# env var to run the pipeline against a separate DB (e.g. building a sample report
+# from sample_symbols.csv without touching the main portfolio database).
+DB_PATH = os.environ.get(
+    "STT_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_tracker.db"),
+)
 
 
 def get_connection():
