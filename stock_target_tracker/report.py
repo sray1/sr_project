@@ -2196,12 +2196,15 @@ renderSymbols('all');
 </html>"""
 
 
-def generate_report(output_path=None):
+def generate_report(output_path=None, write_latest=True):
     """Generate the HTML accuracy report.
 
     Args:
         output_path: Optional path for the HTML file. If None, saves to
-                     stock_target_tracker/output/report.html.
+                     stock_target_tracker/output/report_<timestamp>.html.
+        write_latest: Also write output/lastest.html (the portfolio "latest"
+                      copy). Set False for the sample report so it never
+                      clobbers the personal latest.html.
     """
     if not output_path:
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2232,8 +2235,9 @@ def generate_report(output_path=None):
     print(f"  Report saved to: {output_path} ({file_size_kb:.1f} KB)")
     print(f"  Contains data for {len(data['symbols'])} symbols, {total_targets} targets")
 
-    # Also save as latest.html for easy access
-    if not output_path.endswith('latest.html'):
+    # Also save as latest.html for easy access (skip for the sample report so it
+    # never overwrites the personal portfolio latest.html).
+    if write_latest and not output_path.endswith('latest.html'):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         latest_path = os.path.join(script_dir, 'output', 'latest.html')
         with open(latest_path, 'w', encoding='utf-8') as f:

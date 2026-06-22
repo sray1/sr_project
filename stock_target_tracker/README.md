@@ -35,6 +35,32 @@ python stock_target_tracker/tracker.py schedule
 
 To track a different set of stocks, edit `input/sample_symbols.csv` — only symbols in that file will be tracked.
 
+## Refreshing the Report (portfolio vs sample)
+
+Two strictly-separated workflows, run via `refresh.py`:
+
+```powershell
+# Portfolio — updates the main DB (stock_tracker.db) AND writes output/latest.html
+python stock_target_tracker/refresh.py --mode portfolio
+python stock_target_tracker/refresh.py --mode portfolio --full   # also fetch MarketBeat dated targets
+
+# Sample — writes ONLY output/sample_output.html, using an isolated DB
+#           (sample_tracker.db via STT_DB_PATH). Never touches the main DB or latest.html.
+python stock_target_tracker/refresh.py --mode sample
+```
+
+| | Portfolio | Sample |
+|---|---|---|
+| Whitelist | `input/portfolio_whitelist.csv` | `input/sample_symbols.csv` |
+| Database | main `stock_tracker.db` | isolated `sample_tracker.db` |
+| Output | `output/latest.html` | `output/sample_output.html` |
+| Writes `latest.html`? | yes | **no** |
+
+`latest.html` (personal portfolio) is local-only/untracked. The public GitHub
+Pages site publishes `sample_output.html` (the non-personal sample) via
+`deploy_gh_pages.py` to https://sray1.github.io/sr_project/ . See the deploy
+script header for details.
+
 ## Data Sources
 
 | Source | Method | API Key Required | Rate Limit |
