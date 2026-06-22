@@ -8,7 +8,7 @@ Usage (after regenerating the report):
     python stock_target_tracker/deploy_gh_pages.py
 
 What it does:
-  1. Copies output/latest.html to a throwaway git repo (temp dir) as index.html.
+  1. Copies output/sample_output.html to a throwaway git repo (temp dir) as index.html.
   2. Commits it on an orphan `gh-pages` branch and force-pushes to origin.
      Force-push is safe here: gh-pages is an orphan branch with a single file and
      no shared history with the code branches.
@@ -26,7 +26,10 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)  # sr_project root (parent of stock_target_tracker)
-REPORT = os.path.join(HERE, "output", "latest.html")
+# Publish the non-personal SAMPLE report (built from sample_symbols.csv), not
+# latest.html (which contains a personal portfolio). Keeps the public Pages site
+# free of personal data.
+REPORT = os.path.join(HERE, "output", "sample_output.html")
 BRANCH = "gh-pages"
 
 
