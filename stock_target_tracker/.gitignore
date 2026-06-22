@@ -1,0 +1,13 @@
+# Report output: ignore timestamped reports, keep only the latest published one
+output/*
+!output/latest.html
+
+# Input whitelist: keep only the sample whitelist CSV.
+# Ignore raw portfolio exports and derived whitelists (may contain personal data).
+input/*
+!input/sample_symbols.csv
+
+# Runtime data (also covered by the root .gitignore, repeated for self-containment)
+stock_tracker.db
+*.db
+__pycache__/

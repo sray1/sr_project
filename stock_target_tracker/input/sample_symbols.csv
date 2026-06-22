@@ -1,0 +1,11 @@
+symbol,company_name,sector
+AAPL,Apple Inc.,Technology
+MSFT,Microsoft Corporation,Technology
+GOOGL,Alphabet Inc.,Technology
+AMZN,Amazon.com Inc.,Consumer Cyclical
+NVDA,NVIDIA Corporation,Technology
+TSLA,Tesla Inc.,Consumer Cyclical
+JPM,JPMorgan Chase & Co.,Financial Services
+JNJ,Johnson & Johnson,Healthcare
+V,Visa Inc.,Financial Services
+PG,Procter & Gamble Co.,Consumer Defensive
