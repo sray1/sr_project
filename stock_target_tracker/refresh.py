@@ -33,6 +33,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRACKER = os.path.join(HERE, "tracker.py")
@@ -45,9 +46,17 @@ SAMPLE_OUTPUT = os.path.join(OUTPUT, "sample_output.html")
 PY = sys.executable
 
 
+# Per-step timings collected during a run, printed as a summary at the end.
+STEP_TIMES = []
+
+
 def run(cmd, env, label):
     print(f"\n=== {label} ===\n  $ {' '.join(cmd)}")
+    t0 = time.perf_counter()
     subprocess.run(cmd, check=True, env=env)
+    elapsed = time.perf_counter() - t0
+    STEP_TIMES.append((label, elapsed))
+    print(f"  [{label}] done in {elapsed:.1f}s")
 
 
 def report_cmd(env, output_path, write_latest):
@@ -109,6 +118,18 @@ def main():
     run([PY, TRACKER, "prices", "--csv", csv], env, "prices")
     run([PY, TRACKER, "accuracy"], env, "accuracy")
     run(report_cmd(env, report_output, write_latest), env, "generate report")
+
+    # ── Timing summary ──
+    total = sum(s for _, s in STEP_TIMES)
+    print("\n" + "=" * 60)
+    print("STEP TIMING SUMMARY")
+    print("=" * 60)
+    for label, elapsed in STEP_TIMES:
+        pct = (elapsed / total * 100) if total else 0
+        print(f"  {label:<28} {elapsed:>7.1f}s  ({pct:5.1f}%)")
+    print("-" * 60)
+    print(f"  {'TOTAL (e2e)':<28} {total:>7.1f}s")
+    print("=" * 60)
 
     if args.mode == "sample":
         print(f"\nDone. Sample report: {report_output}")

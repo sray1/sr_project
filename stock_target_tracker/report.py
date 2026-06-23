@@ -11,6 +11,7 @@ Usage:
 
 import os
 import sys
+import re
 import json
 import argparse
 from datetime import datetime, timedelta
@@ -392,10 +393,13 @@ def _fetch_report_data():
         sym["worst_analysts"] = [dict(row) for row in cursor.fetchall()]
 
         # Trim to 3 and make the two lists mutually exclusive (best wins).
-        best_firms = {a["analyst_firm"] for a in sym["best_analysts"][:3]}
-        sym["best_analysts"] = sym["best_analysts"][:3]
-        sym["worst_analysts"] = [a for a in sym["worst_analysts"]
-                                 if a["analyst_firm"] not in best_firms][:3]
+        # Consensus aggregates (oanor monthly consensus) are split out from
+        # individual firms so an aggregate is never listed as a symbol's
+        # "Most Accurate Analyst" alongside a real firm; each group is trimmed
+        # and mutually excluded independently.
+        sym["best_analysts"], sym["worst_analysts"], \
+            sym["best_analysts_consensus"], sym["worst_analysts_consensus"] = \
+            _split_best_worst(sym["best_analysts"], sym["worst_analysts"])
 
         # Fetch this symbol's price history once (from its earliest target date
         # to today) so each displayed analyst target can show the stock's price
@@ -552,7 +556,14 @@ def _fetch_report_data():
                     history_cache.get(t.get("symbol"), []), t.get("date_posted")
                 )
 
-    most_accurate, least_accurate = _rank_analysts(analyst_stats)
+    # Split individual firms from consensus aggregates (oanor monthly consensus)
+    # so the Most/Least Accurate panels rank each group separately — an aggregate
+    # is never ranked alongside a real analyst firm.
+    firm_stats = [a for a in analyst_stats if not _is_consensus_firm(a["analyst_firm"])]
+    consensus_stats = [a for a in analyst_stats if _is_consensus_firm(a["analyst_firm"])]
+
+    most_accurate, least_accurate = _rank_analysts(firm_stats)
+    most_accurate_cons, least_accurate_cons = _rank_analysts(consensus_stats)
 
     # ── Per-org price-target methodology ──
     # One row per analyst org (firm) present in the data, with how its target
@@ -582,6 +593,16 @@ def _fetch_report_data():
             "last_posted": d["last_posted"],
             **_methodology_for(d["analyst_firm"]),
         })
+
+    # Collapse oanor's many consensus rows into one. oanor emits a dated
+    # consensus target per month ("oanor (Nasdaq consensus, 2025-06)", ...) plus
+    # an undated current consensus ("oanor consensus (Nasdaq)", sometimes split by
+    # low/high band). Each would otherwise be its own row in the methodology
+    # table and counted as a separate Consensus org. Group them into a single
+    # "oanor consensus (Nasdaq)" row with summed targets and a per-month chip
+    # cloud (expandable) so the table stays compact. Other consensus orgs (Yahoo,
+    # FMP) and all individual firms are left untouched.
+    org_methodologies = _collapse_oanor_consensus(org_methodologies)
 
     # ── Whole-window target accuracy (over the full year, not just
     # checkpoints) ──
@@ -632,6 +653,7 @@ def _fetch_report_data():
         total_met += met_any_count
         whole_window.append({
             "analyst_firm": org,
+            "is_consensus": _is_consensus_firm(org),
             "n_targets": len(targets),
             "n_evaluated": n_with_data,
             "met_any_count": met_any_count,
@@ -659,11 +681,27 @@ def _fetch_report_data():
         "symbols": symbols,
         "most_accurate_analysts": most_accurate,
         "least_accurate_analysts": least_accurate,
+        "most_accurate_analysts_consensus": most_accurate_cons,
+        "least_accurate_analysts_consensus": least_accurate_cons,
         "org_methodologies": org_methodologies,
         "whole_window": whole_window,
         "whole_window_overall": whole_window_overall,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+def _is_consensus_firm(firm):
+    """True for consensus aggregates (Yahoo/FMP/oanor consensus targets), which
+    are computed means rather than an individual analyst firm's call.
+
+    oanor is the only consensus source with DATED targets, so its monthly
+    consensus entries ("oanor (Nasdaq consensus, 2025-06)") are the ones that
+    flow into the accuracy rankings — they must be separated from real firms
+    (JPMorgan, Morgan Stanley…) so an aggregate is never ranked alongside an
+    individual analyst. Detection mirrors _methodology_for: name contains
+    'consensus' (case-insensitive).
+    """
+    return "consensus" in (firm or "").lower()
 
 
 def _methodology_for(firm):
@@ -676,8 +714,7 @@ def _methodology_for(firm):
     data sources, so we describe the common building blocks rather than claim any
     firm's specific formula.
     """
-    name = (firm or "").lower()
-    if "consensus" in name:
+    if _is_consensus_firm(firm):
         return {
             "org_type": "Consensus",
             "methodology": (
@@ -698,6 +735,110 @@ def _methodology_for(firm):
             "disclosed, so this is the general approach, not the firm's specific formula."
         ),
     }
+
+
+_OANOR_MONTH_RE = re.compile(r"(\d{4}-\d{2})")
+
+
+def _collapse_oanor_consensus(orgs):
+    """Merge all oanor consensus rows in ``orgs`` into a single row.
+
+    oanor produces one dated consensus target per month ("oanor (Nasdaq
+    consensus, 2025-06)") plus an undated current consensus, optionally split by
+    low/high band — so a dozen+ rows that differ only by month/band. They are
+    the same source and the same methodology, so they collapse into one
+    "oanor consensus (Nasdaq)" row: summed target_count, unioned sources,
+    min/max posted dates, and a ``months`` list (month label + target count,
+    including the undated rows) for an expandable per-period chip cloud.
+
+    Non-oanor rows (Yahoo/FMP consensus, all individual firms) are unchanged.
+    Returns the rows in their original order with the single oanor row placed
+    where the first oanor row was.
+    """
+    oanor_idx = next((i for i, o in enumerate(orgs)
+                      if o["org"] and re.match(r"^oanor\b", o["org"], re.I)), None)
+    if oanor_idx is None:
+        return orgs  # nothing to collapse
+
+    oanor_rows = [o for o in orgs if o["org"] and re.match(r"^oanor\b", o["org"], re.I)]
+    others = [o for o in orgs if not (o["org"] and re.match(r"^oanor\b", o["org"], re.I))]
+
+    sources = []
+    for s in (o.get("sources") or [] for o in oanor_rows):
+        for src in s:
+            if src and src not in sources:
+                sources.append(src)
+
+    months = []
+    for o in oanor_rows:
+        m = _OANOR_MONTH_RE.search(o["org"] or "")
+        months.append({
+            "label": m.group(1) if m else o["org"],
+            "target_count": o.get("target_count") or 0,
+        })
+    # Undated (no YYYY-MM) first, then months ascending — current consensus
+    # reads as the latest view, months show the history.
+    months.sort(key=lambda m: m["label"] if re.match(r"\d{4}-\d{2}", m["label"]) else "~")
+
+    firsts = [o.get("first_posted") for o in oanor_rows if o.get("first_posted")]
+    lasts = [o.get("last_posted") for o in oanor_rows if o.get("last_posted")]
+    collapsed = {
+        "org": "oanor consensus (Nasdaq)",
+        "sources": sources,
+        "target_count": sum(o.get("target_count") or 0 for o in oanor_rows),
+        "first_posted": min(firsts) if firsts else None,
+        "last_posted": max(lasts) if lasts else None,
+        "months": months,
+        **_methodology_for("oanor consensus (Nasdaq)"),
+    }
+
+    # Place the collapsed row where the first oanor row was; preserve the
+    # order of the non-oanor rows around it.
+    result = []
+    inserted = False
+    for o in orgs:
+        if o["org"] and re.match(r"^oanor\b", o["org"], re.I):
+            if not inserted:
+                result.append(collapsed)
+                inserted = True
+            # skip the rest of the oanor rows (folded into `collapsed`)
+        else:
+            result.append(o)
+    if not inserted:  # safety net
+        result.append(collapsed)
+    return result
+
+
+def _split_best_worst(best, worst, n=3):
+    """Split per-symbol best/worst analyst lists into individual firms and
+    consensus aggregates, trimming each group to ``n`` and making each pair
+    mutually exclusive (a firm in best is excluded from worst; same for
+    consensus). Consensus entries (oanor monthly consensus) never share a list
+    with real firms.
+
+    Args:
+        best, worst: ordered lists (already deduplicated by firm) from the
+            per-symbol best/worst queries.
+
+    Returns:
+        (best_firms, worst_firms, best_consensus, worst_consensus).
+    """
+    best_firms = [a for a in best if not _is_consensus_firm(a["analyst_firm"])]
+    best_cons = [a for a in best if _is_consensus_firm(a["analyst_firm"])]
+    worst_firms = [a for a in worst if not _is_consensus_firm(a["analyst_firm"])]
+    worst_cons = [a for a in worst if _is_consensus_firm(a["analyst_firm"])]
+
+    best_firms, worst_firms = _mutually_exclude(best_firms, worst_firms, n)
+    best_cons, worst_cons = _mutually_exclude(best_cons, worst_cons, n)
+    return best_firms, worst_firms, best_cons, worst_cons
+
+
+def _mutually_exclude(best, worst, n=3):
+    """Trim best/worst to ``n`` each; drop any firm in best from worst."""
+    best = best[:n]
+    best_names = {a["analyst_firm"] for a in best}
+    worst = [a for a in worst if a["analyst_firm"] not in best_names][:n]
+    return best, worst
 
 
 def _rank_analysts(analyst_stats, min_samples=3, n=5):
@@ -857,6 +998,8 @@ def _build_html(data, insights):
         "by_source": data["by_source"],
         "most_accurate_analysts": data["most_accurate_analysts"],
         "least_accurate_analysts": data["least_accurate_analysts"],
+        "most_accurate_analysts_consensus": data["most_accurate_analysts_consensus"],
+        "least_accurate_analysts_consensus": data["least_accurate_analysts_consensus"],
         "org_methodologies": data["org_methodologies"],
         "whole_window": data["whole_window"],
         "whole_window_overall": data["whole_window_overall"],
@@ -1213,6 +1356,30 @@ h2 {{ font-size: 1.3rem; font-weight: 600; margin-bottom: 16px; color: var(--acc
 .rating-sell {{ background: var(--red-dim); color: var(--red); }}
 .rating-other {{ background: var(--accent-dim); color: var(--accent); }}
 
+/* Sub-group label separating consensus aggregates from individual analyst firms
+   (in the Most/Least Accurate panels and per-symbol best/worst lists). */
+.analyst-subgroup {{
+  margin: 12px 0 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  font-weight: 600;
+}}
+/* Section-divider row in the Whole-Window Target Accuracy table. */
+tr.ww-divider td {{
+  background: var(--bg-elevated, rgba(0,0,0,0.03));
+  border-top: 1px solid var(--border);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  font-weight: 600;
+  padding: 8px 12px;
+}}
+
 /* Best/worst section */
 .bw-section {{
   margin-top: 16px;
@@ -1382,6 +1549,35 @@ h2 {{ font-size: 1.3rem; font-weight: 600; margin-bottom: 16px; color: var(--acc
 .method-table td.method {{ font-size: 0.8rem; color: var(--text-dim); line-height: 1.5; }}
 .method-table td.num {{ font-variant-numeric: tabular-nums; }}
 
+/* Consensus Picks table (compact, one row per symbol; click to open the card). */
+.consensus-table {{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}}
+.consensus-table th {{
+  text-align: left;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--card);
+}}
+.consensus-table td {{
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}}
+.consensus-table tr.cp-row {{ cursor: pointer; }}
+.consensus-table tr.cp-row:hover {{ background: rgba(255,255,255,0.04); }}
+.consensus-table .cp-ticker {{ font-weight: 700; }}
+.consensus-table .cp-target {{ font-weight: 600; }}
+.consensus-table .cp-src {{ color: var(--text-dim); font-size: 0.72rem; }}
+.consensus-table .cp-na {{ color: var(--text-dim); font-style: italic; }}
+.consensus-table .verdict {{ font-size: 0.66rem; padding: 2px 8px; }}
+
 /* Collapsed analyst-firm aggregate row (chip cloud behind a <details>). */
 .method-table tr.firm-aggregate td {{ padding: 0; }}
 .method-table tr.firm-aggregate details {{ padding: 10px 14px; }}
@@ -1489,6 +1685,21 @@ h2 {{ font-size: 1.3rem; font-weight: 600; margin-bottom: 16px; color: var(--acc
     symbol card then breaks down its own targets, per-horizon accuracy, and most/least accurate analysts.
     A separate <strong>Whole-Window Target Accuracy</strong> view evaluates each target against the stock's
     entire year-long price path (whether it was <em>ever</em> reached, not just at the checkpoints).
+  </div>
+
+  <!-- Consensus Picks: one compact row per symbol, the actionable view -->
+  <div>
+    <h2>Consensus Picks</h2>
+    <p class="subtitle" style="margin-top:-8px;margin-bottom:14px">
+      Each symbol's analyst <strong>consensus target</strong> (mean of the source with the most analyst targets)
+      vs the <strong>current price</strong>, sorted by implied move. Click a row to expand that symbol's full
+      card below. <strong style="color:var(--green)">BUY MORE</strong> &ge; +10%,
+      <strong style="color:var(--orange)">HOLD</strong> within &plusmn;10%,
+      <strong style="color:var(--red)">SELL OFF</strong> &le; &minus;10%.
+    </p>
+    <div class="method-table-wrap" style="max-height:520px">
+      <table class="consensus-table" id="consensusPicksTable"></table>
+    </div>
   </div>
 
   <!-- Overall Summary -->
@@ -1626,6 +1837,79 @@ function rangeHtml(r) {{
   return '<span class="range">' + span + ' <span class="range-meta"><span class="date-hl">' + r.start + '</span>&rarr;<span class="date-hl">' + r.end + '</span> (' + r.n_points + 'd)</span></span>';
 }}
 
+// Consensus pick for a symbol: the consensus target (mean of the source with
+// the most analyst targets) vs the current price, as an implied move + a
+// BUY MORE / HOLD / SELL OFF verdict. Shared by the Consensus Picks table and
+// each card's collapsed summary line so the two always agree.
+// Returns {{target, gap, verdict, vcls}} or null when there is no consensus or
+// no current price.
+function consensusPick(sym) {{
+  if (!sym.latest_price || !sym.source_consensus || !sym.source_consensus.length) return null;
+  const consensus = sym.source_consensus.reduce(
+    (best, sc) => sc.analyst_count > (best.analyst_count || 0) ? sc : best,
+    sym.source_consensus[0]);
+  if (!consensus || !consensus.consensus_target) return null;
+  const gap = (consensus.consensus_target - sym.latest_price) / sym.latest_price * 100;
+  let verdict, vcls;
+  if (gap >= 10) {{ verdict = 'BUY MORE'; vcls = 'verdict-buy'; }}
+  else if (gap <= -10) {{ verdict = 'SELL OFF'; vcls = 'verdict-sell'; }}
+  else {{ verdict = 'HOLD'; vcls = 'verdict-hold'; }}
+  return {{ target: consensus.consensus_target, source: consensus.source,
+            analyst_count: consensus.analyst_count || 0, gap, verdict, vcls }};
+}}
+
+// ── Render Consensus Picks table (one row per symbol) ──
+function renderConsensusPicks() {{
+  const el = document.getElementById('consensusPicksTable');
+  const rows = SYMBOLS.map(sym => ({{ sym, pick: consensusPick(sym) }}));
+  // Symbols with a consensus first, sorted by implied move desc (most bullish
+  // first); symbols without a consensus trail at the end by ticker.
+  rows.sort((a, b) => {{
+    if (a.pick && !b.pick) return -1;
+    if (b.pick && !a.pick) return 1;
+    if (a.pick && b.pick) return b.pick.gap - a.pick.gap;
+    return a.sym.symbol.localeCompare(b.sym.symbol);
+  }});
+  el.innerHTML = `
+    <colgroup>
+      <col style="width:14%"><col style="width:18%"><col style="width:20%"><col style="width:16%"><col style="width:32%">
+    </colgroup>
+    <thead>
+      <tr><th>Ticker</th><th>Price</th><th>Consensus</th><th>Implied</th><th>Verdict</th></tr>
+    </thead>
+    <tbody>
+      ${{rows.map(r => {{
+        const sym = r.sym, p = r.pick;
+        const price = sym.latest_price != null ? '$' + sym.latest_price.toFixed(2) : 'N/A';
+        if (!p) {{
+          return `<tr class="cp-row cp-none" data-symbol="${{sym.symbol}}">
+            <td class="cp-ticker">${{sym.symbol}}</td>
+            <td class="num">${{price}}</td>
+            <td colspan="3" class="cp-na">no consensus target</td>
+          </tr>`;
+        }}
+        const gapSign = p.gap > 0 ? '+' : '';
+        return `<tr class="cp-row" data-symbol="${{sym.symbol}}">
+          <td class="cp-ticker">${{sym.symbol}}</td>
+          <td class="num">${{price}}</td>
+          <td class="num"><span class="cp-target">$${{p.target.toFixed(2)}}</span> <span class="cp-src">${{p.source}} &middot; ${{p.analyst_count}} analysts</span></td>
+          <td class="num ${{p.vcls}}">${{gapSign}}${{fmtSig3(p.gap)}}%</td>
+          <td><span class="verdict ${{p.vcls}}">${{p.verdict}}</span></td>
+        </tr>`;
+      }}).join('')}}
+    </tbody>
+  `;
+  // Click a row → scroll to that symbol's card below.
+  el.querySelectorAll('.cp-row').forEach(tr => {{
+    tr.addEventListener('click', () => {{
+      const card = document.getElementById('card-' + tr.getAttribute('data-symbol'));
+      if (card) {{
+        card.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+      }}
+    }});
+  }});
+}}
+
 // ── Render Summary Cards ──
 function renderSummary() {{
   const o = DATA.overall;
@@ -1713,36 +1997,49 @@ function renderAnalysts() {{
   // accurate firm's best call was a "hit"; a least-accurate firm's worst call
   // was "missed". eval_date = date_posted + checkpoint_days = the date the
   // target's outcome was realized (the date the target was hit).
-  function panel(analysts, containerId, barColor, repKey, repLabel, repVerb) {{
+  function row(a, barColor, repKey, repLabel, repVerb) {{
+    const hitRate = a.hit_rate != null ? a.hit_rate : (a.total ? a.hits / a.total * 100 : 0);
+    const barPct = Math.min(100, Math.max(2, hitRate));  // tiny min so a 0% bar is still visible
+    const rep = a[repKey];
+    const made = rep && rep.date_posted ? rep.date_posted : 'unknown';
+    const evald = rep && rep.eval_date ? rep.eval_date : 'unknown';
+    const cp = rep ? rep.checkpoint_days : null;
+    const symLbl = rep && rep.symbol ? rep.symbol + ': ' : '';
+    const rangeLine = rep ? `<div class="analyst-call">${{repLabel}} call: ${{symLbl}}target $${{rep.target_price.toFixed(2)}} made <span class="date-hl">${{made}}</span>, ${{repVerb}} <span class="date-hl">${{evald}}</span> (${{cp}}-day, ${{fmtSig3(rep.pct_diff)}}%)</div><div class="analyst-range">stock ${{rangeHtml(rep.price_range)}}</div>` : '';
+    return `
+      <div class="analyst-row">
+        <div class="analyst-row-head">
+          <span class="analyst-firm-name" title="${{a.analyst_firm}}">${{a.analyst_firm || 'Unknown'}}</span>
+          <span class="analyst-hit">${{fmtSig3(hitRate)}}% hit</span>
+        </div>
+        <div class="analyst-bar"><div class="analyst-bar-fill" style="width:${{barPct}}%; background:${{barColor}}"></div></div>
+        <div class="analyst-meta">${{a.hits}}/${{a.total}} checkpoints hit &middot; ${{fmtSig3(a.avg_abs_pct_diff)}}% avg |dev| &middot; ${{fmtSig3(a.avg_pct_diff)}}% signed</div>
+        ${{rangeLine}}
+      </div>
+    `;
+  }}
+  // firms = individual analyst firms; cons = consensus aggregates (oanor monthly
+  // consensus). Ranked separately so an aggregate is never mixed with a real
+  // firm; consensus rows appear under a labelled sub-section only when present.
+  function panel(firms, cons, containerId, barColor, repKey, repLabel, repVerb) {{
     const el = document.getElementById(containerId);
-    if (!analysts || analysts.length === 0) {{
+    const hasFirms = firms && firms.length > 0;
+    const hasCons = cons && cons.length > 0;
+    if (!hasFirms && !hasCons) {{
       el.innerHTML = '<div class="empty-note">No qualified analyst data yet.</div>';
       return;
     }}
-    el.innerHTML = analysts.map(a => {{
-      const hitRate = a.hit_rate != null ? a.hit_rate : (a.total ? a.hits / a.total * 100 : 0);
-      const barPct = Math.min(100, Math.max(2, hitRate));  // tiny min so a 0% bar is still visible
-      const rep = a[repKey];
-      const made = rep && rep.date_posted ? rep.date_posted : 'unknown';
-      const evald = rep && rep.eval_date ? rep.eval_date : 'unknown';
-      const cp = rep ? rep.checkpoint_days : null;
-      const symLbl = rep && rep.symbol ? rep.symbol + ': ' : '';
-      const rangeLine = rep ? `<div class="analyst-call">${{repLabel}} call: ${{symLbl}}target $${{rep.target_price.toFixed(2)}} made <span class="date-hl">${{made}}</span>, ${{repVerb}} <span class="date-hl">${{evald}}</span> (${{cp}}-day, ${{fmtSig3(rep.pct_diff)}}%)</div><div class="analyst-range">stock ${{rangeHtml(rep.price_range)}}</div>` : '';
-      return `
-        <div class="analyst-row">
-          <div class="analyst-row-head">
-            <span class="analyst-firm-name" title="${{a.analyst_firm}}">${{a.analyst_firm || 'Unknown'}}</span>
-            <span class="analyst-hit">${{fmtSig3(hitRate)}}% hit</span>
-          </div>
-          <div class="analyst-bar"><div class="analyst-bar-fill" style="width:${{barPct}}%; background:${{barColor}}"></div></div>
-          <div class="analyst-meta">${{a.hits}}/${{a.total}} checkpoints hit &middot; ${{fmtSig3(a.avg_abs_pct_diff)}}% avg |dev| &middot; ${{fmtSig3(a.avg_pct_diff)}}% signed</div>
-          ${{rangeLine}}
-        </div>
-      `;
-    }}).join('');
+    let html = (firms || []).map(a => row(a, barColor, repKey, repLabel, repVerb)).join('');
+    if (hasCons) {{
+      html += `<div class="analyst-subgroup">Consensus sources (aggregates, not individual analysts)</div>`;
+      html += cons.map(a => row(a, barColor, repKey, repLabel, repVerb)).join('');
+    }}
+    el.innerHTML = html;
   }}
-  panel(DATA.most_accurate_analysts, 'mostAccurateAnalysts', 'var(--green)', 'best_target', 'Best', 'hit');
-  panel(DATA.least_accurate_analysts, 'leastAccurateAnalysts', 'var(--red)', 'worst_target', 'Worst', 'missed');
+  panel(DATA.most_accurate_analysts, DATA.most_accurate_analysts_consensus,
+        'mostAccurateAnalysts', 'var(--green)', 'best_target', 'Best', 'hit');
+  panel(DATA.least_accurate_analysts, DATA.least_accurate_analysts_consensus,
+        'leastAccurateAnalysts', 'var(--red)', 'worst_target', 'Worst', 'missed');
 }}
 
 // ── Render Price-Target Methodology (per-type summary + compact org table) ──
@@ -1790,14 +2087,36 @@ function renderMethodology() {{
     }}).join('');
   }}
 
-  // Compact org table. Consensus orgs (Yahoo/FMP/oanor — varied sources) stay
-  // as full rows. The long tail of individual analyst firms (almost always
-  // MarketBeat, differing only by name + target count) collapse into ONE
-  // expandable row (chip cloud) so the table needs no scroll.
+  // Compact org table. Consensus orgs (Yahoo/FMP — varied sources) stay as full
+  // rows. oanor's monthly consensus entries are pre-collapsed server-side into
+  // one "oanor consensus (Nasdaq)" row with a per-month chip cloud (expandable).
+  // The long tail of individual analyst firms (almost always MarketBeat,
+  // differing only by name + target count) collapse into ONE expandable row
+  // (chip cloud) so the table needs no scroll.
   const consensus = rows.filter(r => r.org_type === 'Consensus');
   const firms = rows.filter(r => r.org_type !== 'Consensus');
 
   const consensusRows = consensus.map(r => {{
+    // Collapsed oanor row carries a `months` chip cloud; render it like the
+    // firm-aggregate row (expandable) so the per-month breakdown is on demand.
+    if (r.months && r.months.length) {{
+      const monthsLine = r.months.length + ' period' + (r.months.length !== 1 ? 's' : '');
+      return `
+        <tr class="firm-aggregate">
+          <td colspan="4">
+            <details>
+              <summary>
+                <span class="type-pill type-consensus">Consensus</span>
+                <span class="fa-title">${{r.org}}</span>
+                <span class="fa-meta">${{r.target_count}} targets &middot; ${{monthsLine}}</span>
+              </summary>
+              <div class="firm-chips">
+                ${{r.months.map(m => `<span class="firm-chip">${{m.label}} <b>${{m.target_count}}</b></span>`).join('')}}
+              </div>
+            </details>
+          </td>
+        </tr>`;
+    }}
     const sources = (r.sources || []).join(', ');
     return `
       <tr>
@@ -1868,24 +2187,36 @@ function renderWholeWindow() {{
       <tr><th>Analyst Org</th><th>Targets Reached</th><th>Avg Days to Hit</th><th>Avg Time Within &plusmn;5%</th><th>Avg Bias</th></tr>
     </thead>
     <tbody>
-      ${{rows.map(r => {{
-        const metRate = r.met_any_rate || 0;
-        const metCls = metRate >= 60 ? 'text-green' : metRate >= 30 ? 'text-orange' : 'text-red';
-        const dth = r.avg_days_to_hit != null ? r.avg_days_to_hit + 'd' : '—';
-        const wbp = r.avg_within_band_pct != null ? r.avg_within_band_pct : 0;
-        const bias = r.avg_bias_pct != null ? r.avg_bias_pct : 0;
-        const biasCls = bias < -10 ? 'text-red' : bias < 0 ? 'text-orange' : 'text-green';
-        const biasSign = bias > 0 ? '+' : '';
-        return `
-          <tr>
-            <td class="org">${{r.analyst_firm}}</td>
-            <td class="num"><span class="${{metCls}}" style="font-weight:700">${{fmtSig3(metRate)}}%</span> <span style="color:var(--text-dim);font-size:0.76rem">${{r.met_any_count}}/${{r.n_evaluated}}</span></td>
-            <td class="num">${{dth}}</td>
-            <td class="num">${{fmtSig3(wbp)}}%</td>
-            <td class="num ${{biasCls}}" style="font-weight:600">${{biasSign}}${{fmtSig3(bias)}}%</td>
-          </tr>
-        `;
-      }}).join('')}}
+      ${{(function() {{
+        // Individual analyst firms first, then a labelled divider, then consensus
+        // aggregates (oanor monthly consensus) — never mixed in one ranking.
+        const firms = rows.filter(r => !r.is_consensus);
+        const cons = rows.filter(r => r.is_consensus);
+        function rowHtml(r) {{
+          const metRate = r.met_any_rate || 0;
+          const metCls = metRate >= 60 ? 'text-green' : metRate >= 30 ? 'text-orange' : 'text-red';
+          const dth = r.avg_days_to_hit != null ? r.avg_days_to_hit + 'd' : '—';
+          const wbp = r.avg_within_band_pct != null ? r.avg_within_band_pct : 0;
+          const bias = r.avg_bias_pct != null ? r.avg_bias_pct : 0;
+          const biasCls = bias < -10 ? 'text-red' : bias < 0 ? 'text-orange' : 'text-green';
+          const biasSign = bias > 0 ? '+' : '';
+          return `
+            <tr>
+              <td class="org">${{r.analyst_firm}}</td>
+              <td class="num"><span class="${{metCls}}" style="font-weight:700">${{fmtSig3(metRate)}}%</span> <span style="color:var(--text-dim);font-size:0.76rem">${{r.met_any_count}}/${{r.n_evaluated}}</span></td>
+              <td class="num">${{dth}}</td>
+              <td class="num">${{fmtSig3(wbp)}}%</td>
+              <td class="num ${{biasCls}}" style="font-weight:600">${{biasSign}}${{fmtSig3(bias)}}%</td>
+            </tr>
+          `;
+        }}
+        let html = firms.map(rowHtml).join('');
+        if (cons.length) {{
+          html += `<tr class="ww-divider"><td colspan="5">Consensus sources (aggregates, not individual analysts)</td></tr>`;
+          html += cons.map(rowHtml).join('');
+        }}
+        return html;
+      }})()}}
     </tbody>
   `;
 }}
@@ -2099,58 +2430,44 @@ function renderSymbols(filter) {{
     }}).join('');
 
     // Best/worst analysts (each target shows the date it was made + the stock's
-    // price range over the 360 days after the prediction, if available)
-    const bestHtml = (sym.best_analysts || []).map(a => `
-      <div class="analyst-item">
-        <div class="analyst-left">
-          <span class="analyst-firm">${{a.analyst_firm || '?'}}</span>
-          ${{a.date_posted ? '<span class="analyst-date">made ' + a.date_posted + '</span>' : '<span class="analyst-date">date unknown</span>'}}
-          <span class="analyst-range">stock ${{rangeHtml(a.price_range)}}</span>
+    // price range over the 360 days after the prediction, if available).
+    // Consensus aggregates (oanor monthly consensus) are split out under a
+    // labelled sub-section so they never appear as a real analyst firm.
+    function analystItems(list) {{
+      return (list || []).map(a => `
+        <div class="analyst-item">
+          <div class="analyst-left">
+            <span class="analyst-firm">${{a.analyst_firm || '?'}}</span>
+            ${{a.date_posted ? '<span class="analyst-date">made ' + a.date_posted + '</span>' : '<span class="analyst-date">date unknown</span>'}}
+            <span class="analyst-range">stock ${{rangeHtml(a.price_range)}}</span>
+          </div>
+          <div class="analyst-right">
+            <span class="analyst-target">$${{a.target_price}}</span>
+            <span class="${{a.accuracy_rating === 'hit' ? 'text-green' : 'text-red'}}" style="font-weight:600">${{fmtSig3(a.pct_diff)}}%</span>
+          </div>
         </div>
-        <div class="analyst-right">
-          <span class="analyst-target">$${{a.target_price}}</span>
-          <span class="${{a.accuracy_rating === 'hit' ? 'text-green' : 'text-red'}}" style="font-weight:600">${{fmtSig3(a.pct_diff)}}%</span>
-        </div>
-      </div>
-    `).join('');
-
-    const worstHtml = (sym.worst_analysts || []).map(a => `
-      <div class="analyst-item">
-        <div class="analyst-left">
-          <span class="analyst-firm">${{a.analyst_firm || '?'}}</span>
-          ${{a.date_posted ? '<span class="analyst-date">made ' + a.date_posted + '</span>' : '<span class="analyst-date">date unknown</span>'}}
-          <span class="analyst-range">stock ${{rangeHtml(a.price_range)}}</span>
-        </div>
-        <div class="analyst-right">
-          <span class="analyst-target">$${{a.target_price}}</span>
-          <span class="text-red" style="font-weight:600">${{fmtSig3(a.pct_diff)}}%</span>
-        </div>
-      </div>
-    `).join('');
+      `).join('');
+    }}
+    const bestCons = sym.best_analysts_consensus || [];
+    const worstCons = sym.worst_analysts_consensus || [];
+    const bestHtml = analystItems(sym.best_analysts)
+      + (bestCons.length ? '<div class="analyst-subgroup">Consensus sources</div>' + analystItems(bestCons) : '');
+    const worstHtml = analystItems(sym.worst_analysts)
+      + (worstCons.length ? '<div class="analyst-subgroup">Consensus sources</div>' + analystItems(worstCons) : '');
 
     // Consensus verdict: does the consensus target suggest Buy more / Hold / Sell off?
-    // Based on implied move = (consensus_target − current_price) / current_price.
-    //   +10% upside or more  -> Buy more (analysts expect it to rise)
-    //   −10% downside or more -> Sell off (analysts expect it to fall)
-    //   within ±10%         -> Hold (roughly fairly valued)
-    // No targets at all -> neutral "NO TARGETS" badge.
+    // Uses the shared consensusPick() helper so the card's verdict and the
+    // top-level Consensus Picks table always agree.
     const hasTargets = (sym.target_count || 0) > 0;
     const chartHtml = hasTargets ? renderChart(sym) : '';
     const week52Html = render52Week(sym);
     const wwSymHtml = hasTargets ? renderSymbolWholeWindow(sym) : '';
+    const pick = consensusPick(sym);
     let verdictHtml = '';
     if (!hasTargets) {{
       verdictHtml = `<div class="verdict verdict-none" title="No analyst price targets have been fetched for this symbol">NO TARGETS</div>`;
-    }} else if (sym.latest_price && sym.source_consensus && sym.source_consensus.length > 0) {{
-      const consensus = sym.source_consensus.reduce((best, sc) => sc.analyst_count > (best.analyst_count || 0) ? sc : best, sym.source_consensus[0]);
-      if (consensus.consensus_target) {{
-        const gap = ((consensus.consensus_target - sym.latest_price) / sym.latest_price * 100);
-        let verdict, vcls;
-        if (gap >= 10) {{ verdict = 'BUY MORE'; vcls = 'verdict-buy'; }}
-        else if (gap <= -10) {{ verdict = 'SELL OFF'; vcls = 'verdict-sell'; }}
-        else {{ verdict = 'HOLD'; vcls = 'verdict-hold'; }}
-        verdictHtml = `<div class="verdict ${{vcls}}" title="Consensus target $${{consensus.consensus_target}} vs current $${{sym.latest_price.toFixed(2)}}">${{verdict}} <span class="verdict-gap">${{gap > 0 ? '+' : ''}}${{fmtSig3(gap)}}%</span></div>`;
-      }}
+    }} else if (pick) {{
+      verdictHtml = `<div class="verdict ${{pick.vcls}}" title="Consensus target $${{pick.target.toFixed(2)}} vs current $${{sym.latest_price.toFixed(2)}}">${{pick.verdict}} <span class="verdict-gap">${{pick.gap > 0 ? '+' : ''}}${{fmtSig3(pick.gap)}}%</span></div>`;
     }}
 
     // Edge case: a symbol with no analyst targets — show a placeholder instead
@@ -2160,7 +2477,7 @@ function renderSymbols(filter) {{
       : '';
 
     return `
-      <div class="symbol-card" data-sector="${{sym.sector || ''}}">
+      <div class="symbol-card" id="card-${{sym.symbol}}" data-sector="${{sym.sector || ''}}">
         <div class="symbol-header">
           <div>
             <div class="symbol-ticker">${{sym.symbol}}</div>
@@ -2229,6 +2546,7 @@ function filterSymbols(filter) {{
 
 // ── Initialize ──
 renderSummary();
+renderConsensusPicks();
 renderInsights();
 renderCheckpoints();
 renderAnalysts();
