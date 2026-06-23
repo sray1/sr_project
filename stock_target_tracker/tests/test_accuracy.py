@@ -130,3 +130,139 @@ class TestCheckpointPriceProximity:
         assert s["checkpoint_days"] == 180
         assert s["actual_price"] == 107.0  # used the cached price
         assert calls == [], "should not fetch when a close cached price exists"
+
+
+class TestEverHit:
+    """Whole-window ever-hit (TPMetANY) flag: did the price touch the target
+    at any point in the 365-day window?"""
+
+    def test_touch_via_intraday_high(self):
+        # Day's low..high straddles the target -> touched.
+        hist = [{"price_date": "2026-01-05", "low": 95, "high": 105, "close": 100}]
+        res = accuracy.compute_ever_hit(hist, "2026-01-01", 100.0)
+        assert res["ever_hit"] is True
+        assert res["first_hit_date"] == "2026-01-05"
+        assert res["days_to_hit"] == 4
+
+    def test_touch_from_above_bearish_target(self):
+        # Price starts above the target and crosses down through it; the day
+        # straddling 100 (low=99, high=101) is the touch. Direction-agnostic.
+        hist = [
+            {"price_date": "2026-01-03", "low": 108, "high": 112, "close": 110},
+            {"price_date": "2026-01-04", "low": 99, "high": 101, "close": 100},
+        ]
+        res = accuracy.compute_ever_hit(hist, "2026-01-01", 100.0)
+        assert res["ever_hit"] is True
+        assert res["first_hit_date"] == "2026-01-04"
+
+    def test_no_touch_returns_false(self):
+        # Every day's range sits entirely above the target -> never touched,
+        # but there IS usable in-window data, so this is a False verdict (not None).
+        hist = [{"price_date": "2026-01-05", "low": 120, "high": 130, "close": 125}]
+        res = accuracy.compute_ever_hit(hist, "2026-01-01", 100.0)
+        assert res["ever_hit"] is False
+        assert res["first_hit_date"] is None
+        assert res["days_to_hit"] is None
+
+    def test_no_in_window_data_returns_none(self):
+        # History exists but nothing falls inside the window -> can't verdict.
+        hist = [{"price_date": "2027-06-05", "low": 95, "high": 105, "close": 100}]
+        res = accuracy.compute_ever_hit(hist, "2026-01-01", 100.0)
+        assert res is None
+
+    def test_window_clamped_to_today(self):
+        # date_posted + 365 is in the future; window end should be today, and a
+        # touch after today must not exist. A touch within the clamped window hits.
+        today = datetime.now().strftime('%Y-%m-%d')
+        hist = [{"price_date": today, "low": 95, "high": 105, "close": 100}]
+        res = accuracy.compute_ever_hit(hist, "2026-01-01", 100.0)
+        assert res["ever_hit"] is True
+        assert res["first_hit_date"] == today
+
+    def test_update_persists_hit_and_is_sticky(self, monkeypatch):
+        sid = db.save_symbol("HITSTOCK")
+        tid = db.save_target_price(sid, "test", 100.0, analyst_firm="TestCo",
+                                   date_posted="2026-01-01")
+        hist = [{"price_date": "2026-01-10", "low": 95, "high": 105, "close": 100}]
+        monkeypatch.setattr(price_fetcher, "fetch_price_history",
+                            lambda *a, **k: hist)
+
+        stats = accuracy.update_ever_hit_flags()
+        assert stats["evaluated"] == 1
+        assert stats["hit"] == 1
+
+        needing = db.get_targets_needing_ever_hit()
+        assert not any(t["target_price_id"] == tid for t in needing), \
+            "a hit is sticky and must not be re-evaluated"
+
+    def test_miss_is_reevaluated_while_window_open(self, monkeypatch):
+        sid = db.save_symbol("MISSSTOCK")
+        tid = db.save_target_price(sid, "test", 100.0, analyst_firm="TestCo",
+                                   date_posted="2026-01-01")  # window open until 2027-01-01
+        # First pass: no touch -> ever_hit = 0.
+        monkeypatch.setattr(price_fetcher, "fetch_price_history",
+                            lambda *a, **k: [{"price_date": "2026-01-10",
+                                              "low": 120, "high": 130, "close": 125}])
+        accuracy.update_ever_hit_flags()
+        due = db.get_targets_needing_ever_hit()
+        assert any(t["target_price_id"] == tid for t in due), \
+            "a 0 with an open window must stay eligible for re-evaluation"
+
+        # Second pass: price now touches -> flips to 1.
+        monkeypatch.setattr(price_fetcher, "fetch_price_history",
+                            lambda *a, **k: [{"price_date": "2026-02-10",
+                                              "low": 95, "high": 105, "close": 100}])
+        stats = accuracy.update_ever_hit_flags()
+        assert stats["hit"] == 1
+        # Now sticky — no longer eligible.
+        due = db.get_targets_needing_ever_hit()
+        assert not any(t["target_price_id"] == tid for t in due)
+
+    def test_no_history_skips_without_stamping_false(self, monkeypatch):
+        sid = db.save_symbol("NODATA")
+        tid = db.save_target_price(sid, "test", 100.0, analyst_firm="TestCo",
+                                   date_posted="2026-01-01")
+        monkeypatch.setattr(price_fetcher, "fetch_price_history",
+                            lambda *a, **k: [])
+        stats = accuracy.update_ever_hit_flags()
+        assert stats["evaluated"] == 0
+        assert stats["errors"] == 1
+        # Still eligible (not stamped 0) so a later run with data can verdict.
+        due = db.get_targets_needing_ever_hit()
+        assert any(t["target_price_id"] == tid for t in due)
+
+    def test_undated_target_is_never_eligible(self):
+        sid = db.save_symbol("UNDATED")
+        db.save_target_price(sid, "yahoo_finance", 100.0, analyst_firm="Consensus",
+                             date_posted=None)
+        due = db.get_targets_needing_ever_hit()
+        assert not any(t["symbol"] == "UNDATED" for t in due)
+
+
+class TestEverHitMigration:
+    """The ever_hit columns must be added to target_prices on existing DBs."""
+
+    def test_columns_added_on_existing_db(self, tmp_path, monkeypatch):
+        # Build a DB with the OLD schema (no ever_hit columns) by creating the
+        # table manually, then run init_db and confirm the migration adds them.
+        path = str(tmp_path / "old_schema.db")
+        monkeypatch.setattr(db, "DB_PATH", path)
+        conn = sqlite3.connect(path)
+        conn.execute("""CREATE TABLE target_prices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol_id INTEGER,
+            source TEXT, analyst_name TEXT, analyst_firm TEXT,
+            target_price REAL, rating TEXT, date_posted TEXT,
+            fetched_at TEXT, raw_data_json TEXT)""")
+        conn.execute("CREATE TABLE symbols (id INTEGER PRIMARY KEY, symbol TEXT)")
+        conn.commit()
+        conn.close()
+
+        db.init_db()  # should add the missing columns
+
+        conn = sqlite3.connect(path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(target_prices)")}
+        conn.close()
+        assert "ever_hit" in cols
+        assert "first_hit_date" in cols
+        assert "days_to_hit" in cols
+        assert "ever_hit_eval_at" in cols

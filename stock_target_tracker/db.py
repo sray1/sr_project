@@ -102,6 +102,33 @@ def init_db():
         )
     """)
 
+    # ── target_ever_hit migration ──────────────────────────────────────────
+    # A persisted TPMetANY measure: did the stock price ever touch the target
+    # during the [date_posted, date_posted+365] window? Complements the
+    # 30/90/180/365 checkpoint snapshots (which each compare at a single point)
+    # with a whole-window "ever reached" flag — the standard counterpart to the
+    # end-of-horizon hit rate in the analyst-target literature. Only meaningful
+    # for DATED targets (undated consensus targets have no window).
+    #
+    #   ever_hit         0/1, NULL = not yet evaluated
+    #   first_hit_date   first trading day the intraday range touched the target
+    #   days_to_hit      calendar days from date_posted to first_hit_date
+    #   ever_hit_eval_at UTC timestamp of the last evaluation
+    #
+    # Once ever_hit = 1 it is sticky (a target can't be "un-hit"). A 0 is
+    # re-evaluated while the window is still open (a miss today may become a hit
+    # tomorrow); once the window closes it is sticky 0.
+    cursor.execute("PRAGMA table_info(target_prices)")
+    existing_cols = {row["name"] for row in cursor.fetchall()}
+    for col, decl in (
+        ("ever_hit", "INTEGER"),
+        ("first_hit_date", "TEXT"),
+        ("days_to_hit", "INTEGER"),
+        ("ever_hit_eval_at", "TEXT"),
+    ):
+        if col not in existing_cols:
+            cursor.execute(f"ALTER TABLE target_prices ADD COLUMN {col} {decl}")
+
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")
@@ -502,6 +529,111 @@ def get_symbols_needing_accuracy_check(checkpoint_days=None):
     return results
 
 
+# ── target_ever_hit (TPMetANY) ───────────────────────────────────────────
+
+def get_targets_needing_ever_hit(symbol=None):
+    """Find dated targets due for an ever-hit evaluation.
+
+    A target is eligible when:
+      - it has a date_posted and a positive target_price, and
+      - it has never been evaluated (ever_hit IS NULL), OR
+        it was evaluated as not-yet-hit (ever_hit = 0) while its 365-day
+        window is still open (a miss today may become a hit later).
+
+    A hit (ever_hit = 1) is sticky and never re-evaluated. A 0 whose window has
+    closed (date_posted + 365 <= today) is also sticky and skipped.
+
+    Returns list of dicts: {target_price_id, symbol_id, symbol, date_posted,
+    target_price, source, analyst_firm}, grouped by symbol (caller fetches one
+    price history per symbol and evaluates all of that symbol's targets).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    query = """
+        SELECT tp.id as target_price_id, tp.symbol_id, tp.target_price,
+               tp.source, tp.analyst_firm, tp.date_posted, s.symbol
+        FROM target_prices tp
+        JOIN symbols s ON tp.symbol_id = s.id
+        WHERE tp.date_posted IS NOT NULL
+          AND tp.target_price > 0
+          AND (tp.ever_hit IS NULL
+               OR (tp.ever_hit = 0
+                   AND DATE(tp.date_posted, '+365 days') > DATE('now')))
+    """
+    params = []
+    if symbol:
+        query += " AND s.symbol = ?"
+        params.append(symbol.upper())
+    query += " ORDER BY s.symbol, tp.date_posted"
+
+    cursor.execute(query, params)
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return results
+
+
+def save_ever_hit(target_price_id, ever_hit, first_hit_date=None,
+                  days_to_hit=None):
+    """Persist the ever-hit evaluation for a target price.
+
+    ever_hit is 0/1. first_hit_date/days_to_hit are set only when ever_hit=1.
+    Stamps ever_hit_eval_at. Upserts in place (one row per target_price).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now(timezone.utc).isoformat()
+
+    if not ever_hit:
+        # Not hit (yet): clear any stale hit fields in case of re-eval.
+        first_hit_date = None
+        days_to_hit = None
+
+    cursor.execute(
+        "UPDATE target_prices SET ever_hit = ?, first_hit_date = ?, "
+        "days_to_hit = ?, ever_hit_eval_at = ? WHERE id = ?",
+        (1 if ever_hit else 0, first_hit_date, days_to_hit, now, target_price_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_ever_hit_summary():
+    """Aggregate ever-hit (TPMetANY) stats across all evaluated dated targets.
+
+    Returns dict: {total, hit, miss, hit_rate, avg_days_to_hit, n_with_days}.
+    total counts only targets that have been evaluated (ever_hit IS NOT NULL).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT COUNT(*) as total,
+               SUM(CASE WHEN ever_hit = 1 THEN 1 ELSE 0 END) as hit,
+               SUM(CASE WHEN ever_hit = 0 THEN 1 ELSE 0 END) as miss,
+               AVG(CASE WHEN ever_hit = 1 AND days_to_hit IS NOT NULL
+                        THEN days_to_hit END) as avg_days_to_hit,
+               SUM(CASE WHEN ever_hit = 1 AND days_to_hit IS NOT NULL
+                        THEN 1 ELSE 0 END) as n_with_days
+        FROM target_prices
+        WHERE ever_hit IS NOT NULL
+    """)
+    row = cursor.fetchone()
+    conn.close()
+    d = dict(row)
+    total = d["total"] or 0
+    hit = d["hit"] or 0
+    avg_dth = d["avg_days_to_hit"]
+    return {
+        "total": total,
+        "hit": hit,
+        "miss": d["miss"] or 0,
+        "hit_rate": round(hit / total * 100, 1) if total else 0.0,
+        "avg_days_to_hit": round(avg_dth, 1) if avg_dth is not None else None,
+        "n_with_days": d["n_with_days"] or 0,
+    }
+
+
 # ── Display Functions ────────────────────────────────────────────────────
 
 def display_summary(by_source=False, by_checkpoint=False):
@@ -537,6 +669,16 @@ def display_summary(by_source=False, by_checkpoint=False):
         print(f"    Average |deviation|:    {overall['avg_abs_pct_diff']:.1f}%")
     else:
         print("\n  No accuracy data yet. Run 'accuracy' command after targets have aged past checkpoints.")
+
+    # Ever-hit (TPMetANY): share of dated targets the price touched at any
+    # point in their 365-day window. Complements the checkpoint hit rate above
+    # (a point-in-time measure) with the whole-window "ever reached" view.
+    eh = get_ever_hit_summary()
+    if eh["total"]:
+        dth = eh["avg_days_to_hit"]
+        dth_str = f" (avg {dth} days to first touch)" if dth is not None else ""
+        print(f"\n  Ever-hit (TPMetANY — touched at any point in the 365-day window):")
+        print(f"    {eh['hit_rate']:.1f}% ({eh['hit']}/{eh['total']}) of evaluated targets{dth_str}")
 
     # By checkpoint
     if by_checkpoint or not by_source:
@@ -621,7 +763,8 @@ def display_symbol_detail(symbol):
 
     # Analyst targets (latest)
     cursor.execute(
-        "SELECT source, analyst_firm, rating, target_price, date_posted "
+        "SELECT source, analyst_firm, rating, target_price, date_posted, "
+        "ever_hit, first_hit_date, days_to_hit "
         "FROM target_prices WHERE symbol_id = ? "
         "ORDER BY date_posted DESC LIMIT 20",
         (sym["id"],)
@@ -630,13 +773,22 @@ def display_symbol_detail(symbol):
 
     if targets:
         print(f"\n  Analyst Targets (latest):")
-        print(f"    {'Source':<15} {'Firm':<20} {'Rating':<12} {'Target':>8} {'Date':<12}")
-        print(f"    {'-'*15} {'-'*20} {'-'*12} {'-'*8} {'-'*12}")
+        print(f"    {'Source':<15} {'Firm':<20} {'Rating':<12} {'Target':>8} "
+              f"{'Date':<12} {'Ever-hit?':<10}")
+        print(f"    {'-'*15} {'-'*20} {'-'*12} {'-'*8} {'-'*12} {'-'*10}")
         for t in targets:
             firm = t["analyst_firm"] or "—"
             rating = t["rating"] or "—"
+            eh = t["ever_hit"]
+            if eh == 1:
+                dth = t["days_to_hit"]
+                eh_str = f"YES d{dth}" if dth is not None else "YES"
+            elif eh == 0:
+                eh_str = "no"
+            else:
+                eh_str = "—"
             print(f"    {t['source']:<15} {firm:<20} {rating:<12} "
-                  f"${t['target_price']:>7.2f} {t['date_posted'] or 'N/A':<12}")
+                  f"${t['target_price']:>7.2f} {t['date_posted'] or 'N/A':<12} {eh_str:<10}")
 
     # Accuracy history
     cursor.execute("""
