@@ -1568,6 +1568,25 @@ tr.ww-divider td {{
   gap: 16px;
   margin-bottom: 14px;
 }}
+/* Brief per-source description for the consensus data sources. */
+.source-notes {{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 0 0 16px;
+}}
+.source-note {{
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+}}
+.source-note .src-name {{ color: var(--text); font-weight: 600; }}
+.source-note .src-tag {{ font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); margin-left: 6px; }}
 .method-card {{
   background: var(--card);
   border: 1px solid var(--border);
@@ -1756,6 +1775,7 @@ tr.ww-divider td {{
   .summary-row {{ grid-template-columns: repeat(2, 1fr); }}
   .analyst-panels {{ grid-template-columns: 1fr; }}
   .method-cards {{ grid-template-columns: 1fr; }}
+  .source-notes {{ grid-template-columns: 1fr; }}
   .container {{ padding: 12px; }}
 }}
 
@@ -1855,6 +1875,21 @@ tr.ww-divider td {{
       firm</em> targets (proprietary). How each type is calculated is shown once below; the table then lists
       every org and its coverage. Per-source consensus pills elsewhere use <code>consensus = AVG(target_price)</code>.
     </p>
+
+    <div class="source-notes">
+      <div class="source-note">
+        <span class="src-name">oanor</span><span class="src-tag">consensus &middot; dated</span><br>
+        oanor Analyst API serving Nasdaq-sourced analyst data. Provides a current low/mean/high consensus
+        target and, uniquely, month-by-month <em>dated</em> consensus history &mdash; the only consensus
+        source with dated targets, which is what feeds the 30/90/180/365-day checkpoint accuracy engine.
+      </div>
+      <div class="source-note">
+        <span class="src-name">FMP</span><span class="src-tag">consensus &middot; averages</span><br>
+        Financial Modeling Prep API (free tier). Consensus only: a current high/low/median target plus
+        period-averaged targets over the last month, quarter, and year (each with its analyst count). No
+        per-analyst targets, so every FMP row is an aggregate.
+      </div>
+    </div>
 
     <div id="methodSummary" class="method-cards"></div>
 
