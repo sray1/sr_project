@@ -601,9 +601,13 @@ def _fetch_report_data():
     # low/high band). Each would otherwise be its own row in the methodology
     # table and counted as a separate Consensus org. Group them into a single
     # "oanor consensus (Nasdaq)" row with summed targets and a per-month chip
-    # cloud (expandable) so the table stays compact. Other consensus orgs (Yahoo,
-    # FMP) and all individual firms are left untouched.
+    # cloud (expandable) so the table stays compact. Other consensus orgs (Yahoo)
+    # and all individual firms are left untouched.
     org_methodologies = _collapse_oanor_consensus(org_methodologies)
+    # Likewise collapse FMP's consensus + period-averaged rows (which vary per
+    # symbol by their high/low/median and analyst-count labels) into one
+    # "FMP consensus" row with a per-window chip cloud.
+    org_methodologies = _collapse_fmp_consensus(org_methodologies)
 
     # ── Whole-window target accuracy (over the full year, not just
     # checkpoints) ──
@@ -692,17 +696,24 @@ def _fetch_report_data():
 
 
 def _is_consensus_firm(firm):
-    """True for consensus aggregates (Yahoo/FMP/oanor consensus targets), which
-    are computed means rather than an individual analyst firm's call.
+    """True for consensus aggregates (Yahoo/FMP/oanor), which are computed means
+    rather than an individual analyst firm's call.
 
     oanor is the only consensus source with DATED targets, so its monthly
     consensus entries ("oanor (Nasdaq consensus, 2025-06)") are the ones that
     flow into the accuracy rankings — they must be separated from real firms
     (JPMorgan, Morgan Stanley…) so an aggregate is never ranked alongside an
-    individual analyst. Detection mirrors _methodology_for: name contains
-    'consensus' (case-insensitive).
+    individual analyst.
+
+    FMP is consensus-only on the free tier: it publishes a current consensus
+    ("FMP consensus (high/low/median)") and period-averaged targets ("FMP avg
+    (last month/quarter/year, N analysts)") — no per-analyst targets. Both are
+    aggregates, so every firm string starting with "FMP" is treated as consensus.
+    Detection: name contains 'consensus' (Yahoo/oanor/FMP) OR starts with 'FMP'
+    (covers the FMP avg rows whose name has no 'consensus' word).
     """
-    return "consensus" in (firm or "").lower()
+    f = (firm or "").lower()
+    return "consensus" in f or f.startswith("fmp")
 
 
 def _methodology_for(firm):
@@ -803,6 +814,84 @@ def _collapse_oanor_consensus(orgs):
                 result.append(collapsed)
                 inserted = True
             # skip the rest of the oanor rows (folded into `collapsed`)
+        else:
+            result.append(o)
+    if not inserted:  # safety net
+        result.append(collapsed)
+    return result
+
+
+_FMP_WINDOW_RE = re.compile(r"^FMP\s+(consensus|avg)\s*\(([^,]+)")
+
+
+def _collapse_fmp_consensus(orgs):
+    """Merge all FMP consensus/average rows in ``orgs`` into a single row.
+
+    FMP publishes a current consensus ("FMP consensus (high …, low …, median …)")
+    plus period-averaged targets ("FMP avg (last month/quarter/year, N analysts)").
+    Each row's label carries per-symbol numbers (high/low/median, analyst count),
+    so they'd otherwise each be their own methodology row (a dozen+ for a handful
+    of symbols). Collapse into one "FMP consensus" row: summed target_count,
+    unioned sources, min/max posted dates, and a per-window chip cloud
+    (consensus / last month / last quarter / last year + target count) reusing
+    the ``months`` field so the existing expandable chip-cloud renderer applies.
+
+    Non-FMP rows are unchanged; the collapsed row is placed where the first FMP
+    row was. Returns orgs unchanged if there are no FMP rows.
+    """
+    def is_fmp(o):
+        return bool(o.get("org")) and re.match(r"^FMP\b", o["org"], re.I)
+
+    if not any(is_fmp(o) for o in orgs):
+        return orgs
+
+    fmp_rows = [o for o in orgs if is_fmp(o)]
+
+    sources = []
+    for s in (o.get("sources") or [] for o in fmp_rows):
+        for src in s:
+            if src and src not in sources:
+                sources.append(src)
+
+    # Aggregate target counts per window label.
+    by_label = {}
+    for o in fmp_rows:
+        m = _FMP_WINDOW_RE.match(o["org"] or "")
+        if m and m.group(1) == "consensus":
+            label = "consensus"
+        elif m:
+            label = m.group(2).strip()
+        else:
+            label = o["org"] or "FMP"
+        by_label[label] = by_label.get(label, 0) + (o.get("target_count") or 0)
+
+    # Stable order: current consensus first, then periods chronologically.
+    order = {"consensus": 0, "last month": 1, "last quarter": 2, "last year": 3}
+    months = sorted(
+        ({"label": lbl, "target_count": cnt} for lbl, cnt in by_label.items()),
+        key=lambda m: (order.get(m["label"], 99), m["label"]),
+    )
+
+    firsts = [o.get("first_posted") for o in fmp_rows if o.get("first_posted")]
+    lasts = [o.get("last_posted") for o in fmp_rows if o.get("last_posted")]
+    collapsed = {
+        "org": "FMP consensus",
+        "sources": sources,
+        "target_count": sum(o.get("target_count") or 0 for o in fmp_rows),
+        "first_posted": min(firsts) if firsts else None,
+        "last_posted": max(lasts) if lasts else None,
+        "months": months,
+        **_methodology_for("FMP consensus"),
+    }
+
+    result = []
+    inserted = False
+    for o in orgs:
+        if is_fmp(o):
+            if not inserted:
+                result.append(collapsed)
+                inserted = True
+            # skip the rest of the FMP rows (folded into `collapsed`)
         else:
             result.append(o)
     if not inserted:  # safety net
