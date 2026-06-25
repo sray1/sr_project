@@ -30,6 +30,7 @@ and report.py via the normal CLI, with STT_DB_PATH set only for sample mode.
 """
 
 import argparse
+import glob
 import os
 import subprocess
 import sys
@@ -118,6 +119,31 @@ def main():
     run([PY, TRACKER, "prices", "--csv", csv], env, "prices")
     run([PY, TRACKER, "accuracy"], env, "accuracy")
     run(report_cmd(env, report_output, write_latest), env, "generate report")
+
+    # ── Inject the step-timing footer into the generated HTML ──
+    # Done after the report step completes so the report's own generation time is
+    # included in the e2e total. Injects into every report file written this run.
+    inject_targets = []
+    if args.mode == "sample":
+        inject_targets.append(SAMPLE_OUTPUT)
+    else:
+        # Portfolio: generate_report writes a timestamped report + latest.html.
+        latest_path = os.path.join(OUTPUT, "latest.html")
+        if os.path.exists(latest_path):
+            inject_targets.append(latest_path)
+        ts_reports = sorted(glob.glob(os.path.join(OUTPUT, "report_*.html")),
+                            key=os.path.getmtime, reverse=True)
+        if ts_reports:
+            inject_targets.append(ts_reports[0])  # newest = the one just written
+    # report.inject_timing lives in the same package; import lazily so a stale
+    # report.py on a frozen build won't break the timing printout below.
+    try:
+        import report as _report_mod
+        for tgt in inject_targets:
+            _report_mod.inject_timing(tgt, STEP_TIMES)
+            print(f"  Injected timing footer into {os.path.basename(tgt)}")
+    except Exception as e:
+        print(f"  (could not inject timing footer: {e})")
 
     # ── Timing summary ──
     total = sum(s for _, s in STEP_TIMES)

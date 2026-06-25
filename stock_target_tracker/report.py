@@ -14,6 +14,7 @@ import sys
 import re
 import json
 import argparse
+import html as _html
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1345,6 +1346,17 @@ h2 {{ font-size: 1.3rem; font-weight: 600; margin-bottom: 16px; color: var(--acc
 .analyst-range .range-na {{ color: var(--text-dim); font-style: italic; }}
 .date-hl {{ color: var(--date); font-weight: 600; }}
 .analyst-target {{ font-weight: 600; }}
+/* Checkpoint chip on each best/worst analyst target: which checkpoint the
+   representative call was evaluated at, and whether it hit. */
+.analyst-cp {{
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+  opacity: 0.92;
+}}
 .analyst-rating {{
   font-size: 0.7rem;
   padding: 1px 8px;
@@ -1667,6 +1679,25 @@ tr.ww-divider td {{
   border-top: 1px solid var(--border);
   margin-top: 32px;
 }}
+/* Run timing footer: per-step + e2e elapsed, populated by refresh.py after the
+   run completes (so the report step's own time is included). Small, muted. */
+.run-timing {{
+  max-width: 1200px;
+  margin: 24px auto 40px;
+  padding: 10px 16px;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  border-top: 1px dashed var(--border);
+}}
+.run-timing .rt-title {{ font-weight: 600; color: var(--text-dim); margin-bottom: 4px; }}
+.run-timing table {{ border-collapse: collapse; margin-top: 4px; }}
+.run-timing td {{ padding: 1px 14px 1px 0; white-space: pre; }}
+.run-timing td.rt-step {{ text-align: left; }}
+.run-timing td.rt-secs {{ text-align: right; font-variant-numeric: tabular-nums; }}
+.run-timing td.rt-pct {{ text-align: right; font-variant-numeric: tabular-nums; color: var(--text-dim); }}
+.run-timing tr.rt-total td {{ font-weight: 600; color: var(--text); border-top: 1px solid var(--border); padding-top: 3px; }}
+.run-timing .rt-stamp {{ margin-top: 6px; font-size: 0.66rem; }}
 </style>
 </head>
 <body>
@@ -2434,7 +2465,16 @@ function renderSymbols(filter) {{
     // Consensus aggregates (oanor monthly consensus) are split out under a
     // labelled sub-section so they never appear as a real analyst firm.
     function analystItems(list) {{
-      return (list || []).map(a => `
+      return (list || []).map(a => {{
+        // Checkpoint chip: which horizon this representative call was scored at,
+        // and whether it hit (e.g. "30d hit" / "180d miss"). Only dated targets
+        // that produced a snapshot carry checkpoint_days.
+        const hit = a.accuracy_rating === 'hit';
+        const cpCls = hit ? 'text-green' : 'text-red';
+        const cpChip = a.checkpoint_days
+          ? `<span class="analyst-cp ${{cpCls}}" title="Evaluated at the ${{a.checkpoint_days}}-day checkpoint (${{hit ? 'hit' : 'miss'}})">${{a.checkpoint_days}}d ${{hit ? 'hit' : 'miss'}}</span>`
+          : '';
+        return `
         <div class="analyst-item">
           <div class="analyst-left">
             <span class="analyst-firm">${{a.analyst_firm || '?'}}</span>
@@ -2442,11 +2482,13 @@ function renderSymbols(filter) {{
             <span class="analyst-range">stock ${{rangeHtml(a.price_range)}}</span>
           </div>
           <div class="analyst-right">
+            ${{cpChip}}
             <span class="analyst-target">$${{a.target_price}}</span>
-            <span class="${{a.accuracy_rating === 'hit' ? 'text-green' : 'text-red'}}" style="font-weight:600">${{fmtSig3(a.pct_diff)}}%</span>
+            <span class="${{cpCls}}" style="font-weight:600">${{fmtSig3(a.pct_diff)}}%</span>
           </div>
         </div>
-      `).join('');
+      `;
+      }}).join('');
     }}
     const bestCons = sym.best_analysts_consensus || [];
     const worstCons = sym.worst_analysts_consensus || [];
@@ -2555,6 +2597,7 @@ renderWholeWindow();
 renderFilterTabs();
 renderSymbols('all');
 </script>
+<!--RUN_TIMING-->
 </body>
 </html>"""
 
@@ -2608,6 +2651,60 @@ def generate_report(output_path=None, write_latest=True):
         print(f"  Also saved as: {latest_path}")
 
     return output_path
+
+
+def _format_step_times(step_times):
+    """Build the small-font timing footer HTML from [(label, elapsed_seconds), ...].
+
+    Includes a TOTAL (e2e) row. Returns '' if step_times is empty.
+    """
+    if not step_times:
+        return ""
+    total = sum(s for _, s in step_times)
+    rows = ""
+    for label, elapsed in step_times:
+        pct = (elapsed / total * 100) if total else 0
+        rows += (
+            f'<tr><td class="rt-step">{_html.escape(str(label))}</td>'
+            f'<td class="rt-secs">{elapsed:>7.1f}s</td>'
+            f'<td class="rt-pct">({pct:5.1f}%)</td></tr>'
+        )
+    rows += (
+        '<tr class="rt-total"><td class="rt-step">TOTAL (e2e)</td>'
+        f'<td class="rt-secs">{total:>7.1f}s</td>'
+        f'<td class="rt-pct">(100.0%)</td></tr>'
+    )
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        '<div class="run-timing">'
+        '<div class="rt-title">Run timing (end-to-end refresh)</div>'
+        f'<table>{rows}</table>'
+        f'<div class="rt-stamp">Generated {stamp}</div>'
+        '</div>'
+    )
+
+
+def inject_timing(html_path, step_times):
+    """Replace the <!--RUN_TIMING--> placeholder in a generated report with the
+    small-font step-timing footer. Called by refresh.py AFTER the report step
+    completes, so the report's own generation time is included.
+
+    Writes both the given html_path and, if it is latest.html / a timestamped
+    report, leaves them consistent. Safe to call when the placeholder is absent
+    (e.g. report.py run standalone without refresh.py) — it then no-ops.
+    """
+    if not step_times or not os.path.exists(html_path):
+        return
+    footer = _format_step_times(step_times)
+    if not footer:
+        return
+    with open(html_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if "<!--RUN_TIMING-->" not in content:
+        return
+    content = content.replace("<!--RUN_TIMING-->", footer)
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(content)
 
 
 if __name__ == "__main__":
