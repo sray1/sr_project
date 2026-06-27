@@ -1587,6 +1587,20 @@ tr.ww-divider td {{
 }}
 .source-note .src-name {{ color: var(--text); font-weight: 600; }}
 .source-note .src-tag {{ font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); margin-left: 6px; }}
+/* Footnote on comparable public services and how this report differs. */
+.comparable-note {{
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 16px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-dim);
+}}
+.comparable-note .cn-title {{ color: var(--text); font-weight: 600; margin-bottom: 4px; }}
+.comparable-note strong {{ color: var(--text); font-weight: 600; }}
 .method-card {{
   background: var(--card);
   border: 1px solid var(--border);
@@ -1903,6 +1917,20 @@ tr.ww-divider td {{
 
     <div class="method-table-wrap">
       <table class="method-table" id="methodologyTable"></table>
+    </div>
+
+    <div class="comparable-note">
+      <div class="cn-title">Comparable services &amp; how this report differs</div>
+      <strong>AnaChart</strong> tracks ~4,000 analysts over 20 years and ranks them by 12-month
+      price-target <em>hit ratio</em> &mdash; the closest public analogue to the per-target hit logic used
+      here. <strong>Eidolum</strong> scores each call HIT / NEAR / MISS at window expiry (timestamped, no
+      revisions). <strong>TipRanks</strong>, <strong>MarketBeat</strong>, <strong>WallStreetZen</strong>, and
+      <strong>Quiver Quantitative</strong> instead rank analysts by composite scores or Buy-call ROI over
+      short/long windows, not per-target fulfillment.<br><br>
+      <strong>Differentiator:</strong> this report publishes <em>both</em> measures &mdash; fixed-horizon
+      accuracy at 30/90/180/365 days (TPMetEND) <em>and</em> a persisted ever-hit flag for whether the price
+      touched the target at any point in the 365-day window (TPMetANY, direction-agnostic intraday touch) &mdash;
+      per the academic methodology (Asquith, Bonini, Bilinski et al.). Public services typically expose only one.
     </div>
   </div>
 
