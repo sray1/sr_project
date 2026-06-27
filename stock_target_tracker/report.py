@@ -248,7 +248,7 @@ def _fetch_report_data():
     # subqueries. Joining target_prices and accuracy_snapshots to `symbols`
     # independently (on symbol_id only) creates a cartesian product that
     # multiplies the per-symbol hit count by the number of targets, producing
-    # hit rates above 100% (e.g. 12 hits × 26 targets / 33 snapshots = 945%).
+    # hit rates above 100% (e.g. 12 hits &times; 26 targets / 33 snapshots = 945%).
     # Keeping each aggregate in its own subquery avoids the fan-out entirely.
     cursor.execute("""
         SELECT s.id, s.symbol, s.company_name, s.sector,
@@ -1710,6 +1710,8 @@ tr.ww-divider td {{
 .consensus-table .cp-target {{ font-weight: 600; }}
 .consensus-table .cp-src {{ color: var(--text-dim); font-size: 0.72rem; }}
 .consensus-table .cp-na {{ color: var(--text-dim); font-style: italic; }}
+.consensus-table .cp-conv {{ font-weight: 600; font-variant-numeric: tabular-nums; }}
+.consensus-table .cp-conv-na {{ color: var(--text-dim); font-style: italic; font-weight: 400; }}
 .consensus-table .verdict {{ font-size: 0.66rem; padding: 2px 8px; }}
 
 /* Collapsed analyst-firm aggregate row (chip cloud behind a <details>). */
@@ -1846,9 +1848,11 @@ tr.ww-divider td {{
     <h2>Consensus Picks</h2>
     <p class="subtitle" style="margin-top:-8px;margin-bottom:14px">
       Each symbol's analyst <strong>consensus target</strong> (mean of the source with the most analyst targets)
-      vs the <strong>current price</strong>, sorted by implied move. Click a row to expand that symbol's full
-      card below. <strong style="color:var(--green)">BUY MORE</strong> &ge; +10%,
-      <strong style="color:var(--orange)">HOLD</strong> within &plusmn;10%,
+      vs the <strong>current price</strong>. <strong>Conviction</strong> = (implied move + analyst bias) &times;
+      symbol hit rate &mdash; a single sortable signal that rewards large <em>realistic</em> upside at stocks whose
+      targets tend to get hit (and downweights names where analysts systematically overshoot or rarely hit).
+      Sorted by conviction; click a row to expand that symbol's card. <strong style="color:var(--green)">BUY MORE</strong>
+      &ge; +10%, <strong style="color:var(--orange)">HOLD</strong> within &plusmn;10%,
       <strong style="color:var(--red)">SELL OFF</strong> &le; &minus;10%.
     </p>
     <div class="method-table-wrap" style="max-height:520px">
@@ -2041,13 +2045,42 @@ function consensusPick(sym) {{
             analyst_count: consensus.analyst_count || 0, gap, verdict, vcls }};
 }}
 
+// Conviction score: one sortable signal combining the *realistic* implied move
+// with how reliably this stock's analyst targets actually get hit.
+//   conviction = biasAdjustedGap &times; symbolHitRate
+//   biasAdjustedGap = gap + avg_pct_diff   — shave the implied move by the
+//                     stock's typical analyst overshoot (avg_pct_diff is mean
+//                     actual−target; negative = analysts too optimistic, so it
+//                     lowers the gap toward what's actually been realized)
+//   symbolHitRate   = hits / snapshot_count (0..1) — share of this symbol's
+//                     checkpoint comparisons that landed within ±5% of target
+// Returns {{value, adjGap, hitRate, snaps}} or null when there are no
+// snapshots (can't score reliability) or no pick.
+function convictionScore(sym, pick) {{
+  if (!pick) return null;
+  const snaps = sym.snapshot_count || 0;
+  if (!snaps) return null;
+  const hitRate = Math.min(1, (sym.hits || 0) / snaps);
+  const adjGap = pick.gap + (sym.avg_pct_diff || 0);
+  return {{ value: adjGap * hitRate, adjGap, hitRate, snaps }};
+}}
+
 // ── Render Consensus Picks table (one row per symbol) ──
 function renderConsensusPicks() {{
   const el = document.getElementById('consensusPicksTable');
-  const rows = SYMBOLS.map(sym => ({{ sym, pick: consensusPick(sym) }}));
-  // Symbols with a consensus first, sorted by implied move desc (most bullish
-  // first); symbols without a consensus trail at the end by ticker.
+  const rows = SYMBOLS.map(sym => {{
+    const pick = consensusPick(sym);
+    return {{ sym, pick, score: convictionScore(sym, pick) }};
+  }});
+  // Sort by conviction score desc (strongest realistic-conviction buys on
+  // top). Unscored rows (a pick but no checkpoint history) follow, ordered by
+  // implied move; symbols with no consensus trail last by ticker.
   rows.sort((a, b) => {{
+    const sa = a.score ? a.score.value : null;
+    const sb = b.score ? b.score.value : null;
+    if (sa !== null && sb === null) return -1;
+    if (sb !== null && sa === null) return 1;
+    if (sa !== null && sb !== null) return sb - sa;
     if (a.pick && !b.pick) return -1;
     if (b.pick && !a.pick) return 1;
     if (a.pick && b.pick) return b.pick.gap - a.pick.gap;
@@ -2055,28 +2088,40 @@ function renderConsensusPicks() {{
   }});
   el.innerHTML = `
     <colgroup>
-      <col style="width:14%"><col style="width:18%"><col style="width:20%"><col style="width:16%"><col style="width:32%">
+      <col style="width:13%"><col style="width:15%"><col style="width:23%"><col style="width:13%"><col style="width:13%"><col style="width:23%">
     </colgroup>
     <thead>
-      <tr><th>Ticker</th><th>Price</th><th>Consensus</th><th>Implied</th><th>Verdict</th></tr>
+      <tr><th>Ticker</th><th>Price</th><th>Consensus</th><th>Implied</th><th title="conviction = (implied move + analyst bias) &times; symbol hit rate">Conv.</th><th>Verdict</th></tr>
     </thead>
     <tbody>
       ${{rows.map(r => {{
-        const sym = r.sym, p = r.pick;
+        const sym = r.sym, p = r.pick, s = r.score;
         const price = sym.latest_price != null ? '$' + sym.latest_price.toFixed(2) : 'N/A';
         if (!p) {{
           return `<tr class="cp-row cp-none" data-symbol="${{sym.symbol}}">
             <td class="cp-ticker">${{sym.symbol}}</td>
             <td class="num">${{price}}</td>
-            <td colspan="3" class="cp-na">no consensus target</td>
+            <td colspan="4" class="cp-na">no consensus target</td>
           </tr>`;
         }}
         const gapSign = p.gap > 0 ? '+' : '';
+        // Conviction cell: scored rows show the number (green + / red −) with a
+        // tooltip breaking down the components; unscored rows show an em dash.
+        let convCell;
+        if (s) {{
+          const cls = s.value > 0 ? 'text-green' : s.value < 0 ? 'text-red' : '';
+          const sign = s.value > 0 ? '+' : '';
+          const bias = (sym.avg_pct_diff || 0);
+          convCell = `<td class="num cp-conv ${{cls}}" title="conviction = (implied ${{gapSign}}${{fmtSig3(p.gap)}}% + bias ${{fmtSig3(bias)}}%) &times; hit rate ${{(s.hitRate*100).toFixed(0)}}% = ${{sign}}${{s.value.toFixed(1)}} (${{s.snaps}} snapshots)">${{sign}}${{s.value.toFixed(1)}}</td>`;
+        }} else {{
+          convCell = `<td class="num cp-conv-na" title="no checkpoint history yet — can't score reliability">—</td>`;
+        }}
         return `<tr class="cp-row" data-symbol="${{sym.symbol}}">
           <td class="cp-ticker">${{sym.symbol}}</td>
           <td class="num">${{price}}</td>
           <td class="num"><span class="cp-target">$${{p.target.toFixed(2)}}</span> <span class="cp-src">${{p.source}} &middot; ${{p.analyst_count}} analysts</span></td>
           <td class="num ${{p.vcls}}">${{gapSign}}${{fmtSig3(p.gap)}}%</td>
+          ${{convCell}}
           <td><span class="verdict ${{p.vcls}}">${{p.verdict}}</span></td>
         </tr>`;
       }}).join('')}}
