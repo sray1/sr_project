@@ -142,9 +142,38 @@ Accuracy is measured at four checkpoints after a target price is issued:
 SQLite database (`stock_tracker.db`) with four tables:
 
 - **`symbols`** — Tracked stock symbols with company metadata
-- **`target_prices`** — Analyst targets from each source (upsert by symbol/source/firm/date)
+- **`target_prices`** — Analyst targets from each source (upsert by symbol/source/firm/date). Includes `ever_hit` / `first_hit_date` / `days_to_hit` / `ever_hit_eval_at` migration columns for the TPMetANY metric (see below).
 - **`actual_prices`** — Historical stock prices (upsert by symbol/date)
 - **`accuracy_snapshots`** — Checkpoint comparison results (upsert by target/checkpoint)
+
+## Accuracy Metrics
+
+Two complementary metrics are tracked per target:
+
+- **TPMetEND (checkpoint hit)** — At each fixed checkpoint (30/90/180/365 days after the target was issued), is the actual close within ±5% of the target? This is the snapshot-based hit/miss rating above. Hit rate declines with horizon and is the headline per-checkpoint stat.
+- **TPMetANY (ever-hit)** — Did the stock touch the target *at any point* within a 365-day window from issue? Stored as a sticky `ever_hit` flag on `target_prices` (once true, stays true), with `days_to_hit` (avg ~23 days observed). This is a more lenient "did the target ever get reached" measure and runs noticeably higher than the checkpoint hit rate.
+
+## Report Features
+
+The generated HTML report (`report.py`) is a standalone file with embedded JSON + vanilla JS (no external assets), so it can be shared/opened offline. Recent additions:
+
+- **Conviction score** — the Consensus Picks table is sorted by a conviction score = `(implied_move + avg_pct_diff) × hit_rate`. This is a bias-adjusted gap (the symbol's historical analyst bias added back to the current gap to price) multiplied by the symbol's observed hit rate, so it favors targets that are both wide-of-price *and* on symbols analysts have historically nailed. Hover the cell for the component breakdown; symbols with no snapshots show "—".
+- **Checkpoint chips** — per-symbol best/worst analyst items show a `Nd hit/miss` chip indicating which checkpoint (30/90/180/365d) that analyst's accuracy was measured at, color-coded green/red.
+- **Consensus vs individual-firm classification** — FMP and any firm whose name contains "consensus" are routed into the consensus sections (not ranked as individual firms). FMP's free tier is consensus + period-averaged only (no per-analyst targets), so it is correctly treated as a consensus source.
+- **Methodology collapse** — per-symbol-varying oanor/FMP methodology rows are merged into single rows with a chip cloud of the months/windows covered.
+- **Source descriptions** — the methodology section includes brief cards describing oanor (Nasdaq-sourced, dated consensus timeline) and FMP (consensus + period averages).
+- **Comparable-services note** — methodology names comparable services (AnaChart, Eidolum, TipRanks, MarketBeat, WallStreetZen, Quiver) and notes this tracker's differentiators (TPMetEND + TPMetANY, Asquith/Bonini/Bilinski methodology lineage).
+- **Run-timing footer** — `refresh.py` injects a small-font footer into each generated report with per-step elapsed times, % of total, and the e2e TOTAL, plus a generation timestamp.
+
+## DB Health Check & Trends
+
+`db_check.py` inspects both databases (portfolio `stock_tracker.db` + isolated `sample_tracker.db`) and prints schema/integrity checks, data-quality issues, and overall trends:
+
+```powershell
+python stock_target_tracker/db_check.py
+```
+
+It checks: expected tables, ever_hit migration columns, orphan foreign keys, leftover cash/fund symbols (e.g. SPAXX), NULL `date_posted` on dated sources, duplicate target groups, bad target prices, dated targets missing snapshots, stale `ever_hit` on closed windows, price staleness, and `no_data` snapshots. It then reports trends: targets by source/month (with a sparkline + ▲/▼ direction), hit rate by checkpoint (with avg `pct_diff` bias), the ever-hit summary, consensus vs individual-firm hit rate, and most/least accurate firms (min 5 snapshots).
 
 ## Project Structure
 
@@ -157,12 +186,16 @@ stock_target_tracker/
     sources/
         __init__.py           # Source registry + dispatcher
         yahoo_finance.py      # Yahoo Finance fetcher
-        fmp.py               # Financial Modeling Prep API fetcher
+        fmp.py               # Financial Modeling Prep API fetcher (consensus + period averages)
+        oanor.py             # oanor Analyst API fetcher (Nasdaq-sourced consensus + dated timeline)
         marketbeat.py         # MarketBeat web scraper
     price_fetcher.py          # Current/historical stock price fetcher
     accuracy.py               # Multi-checkpoint accuracy logic
     scheduler.py              # APScheduler daily auto-fetch
-    report.py                 # HTML accuracy report generator
+    report.py                 # HTML accuracy report generator (standalone, embedded JSON + JS)
+    refresh.py                # One-shot portfolio/sample refresh wrapper (fetch+prices+accuracy+report, with timing)
+    db_check.py               # DB health check + trend report (run ad-hoc)
+    deploy_gh_pages.py        # Publish sample_output.html to GitHub Pages (orphan gh-pages branch)
     input/
         sample_symbols.csv    # Whitelist of trackable symbols (the only stocks tracked)
     output/                   # Generated HTML reports (timestamped)
