@@ -11,6 +11,7 @@ dependencies = [
     "nba-api>=1.11.4",
     "numpy>=2.0.0",
     "pandas>=3.0.0",
+    "playwright>=1.61.0",
     "pydfs-lineup-optimizer>=3.6.1",
     "python-dotenv>=1.2.2",
     "yfinance>=1.4.1",

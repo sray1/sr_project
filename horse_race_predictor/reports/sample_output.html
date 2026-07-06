@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Horse Race Predictor - Weekly Accuracy Report</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; color: #222; }
+  h1, h2 { color: #1a3a5c; }
+  .meta { color: #555; margin-bottom: 16px; font-size: 14px; }
+  table { border-collapse: collapse; width: auto; table-layout: auto; margin: 12px 0 28px; font-size: 13px; }
+  th, td { border: 1px solid #ccc; padding: 3px 7px; text-align: left; white-space: nowrap; }
+  td.name, th.name { white-space: normal; max-width: 150px; overflow-wrap: anywhere; }
+  th { background: #1a3a5c; color: #fff; }
+  td.num, th.num { text-align: right; }
+  tr:nth-child(even) td { background: #f6f8fa; }
+  td.hit { background: #d4f4d4; font-weight: bold; text-align: center; }
+  td.place { background: #e6f2d4; font-weight: bold; text-align: center; }
+  td.show { background: #f4ecd0; font-weight: bold; text-align: center; }
+  td.miss { background: #f8d4d4; text-align: center; }
+  td.race { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.card { white-space: nowrap; font-weight: bold; background: #eef2f7; vertical-align: top; }
+  td.empty { color: #888; font-style: italic; text-align: center; }
+  td.pos { color: #1a7a1a; font-weight: bold; }
+  td.neg { color: #a00; font-weight: bold; }
+  .methodology { background: #f6f8fa; border-left: 4px solid #1a3a5c; padding: 12px 16px; font-size: 13px; }
+  code { background: #eef; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>Horse Race Predictor - Weekly Accuracy Report</h1>
+<div class="meta">
+  <strong>Window:</strong> 2026-07-03 to 2026-07-03 (inclusive)<br>
+  <strong>Tracks:</strong> Gulfstream Park, Saratoga<br>
+  <strong>Predictors compared:</strong> MLO favorite / 2nd / 3rd / longshot, Post position (in/out), Leading jockey / trainer, Random, Consensus blend<br>
+  <strong>Results source:</strong> HRN direct (full finish order + $2 WPS payoffs) + parse.bot fallback<br>
+  <strong>Generated:</strong> see DB reports.generated_at
+</div>
+
+<h2>Predictor comparison</h2>
+<p class="meta">ROI is computed on a $2 win bet per race, over all 20 races (HRN payouts tables supply mutuel payoffs for every scored race).</p>
+<table>
+  <tr><th>Source</th><th class='num'>Races</th><th class='num'>Win</th><th class='num'>Plc</th><th class='num'>Shw</th><th class='num'>Win %</th><th class='num'>Plc %</th><th class='num'>Shw %</th><th class='num'>ROI %</th></tr>
+      <tr><td>MLO 2nd-choice</td><td class='num'>20</td><td class='num'>4</td><td class='num'>8</td><td class='num'>12</td><td class='num'>20.0%</td><td class='num'>40.0%</td><td class='num'>60.0%</td><td class='num'>-43.5%</td></tr>
+      <tr><td>Post position (in)</td><td class='num'>20</td><td class='num'>4</td><td class='num'>8</td><td class='num'>10</td><td class='num'>20.0%</td><td class='num'>40.0%</td><td class='num'>50.0%</td><td class='num'>+109.5%</td></tr>
+      <tr><td>Consensus (blend)</td><td class='num'>20</td><td class='num'>3</td><td class='num'>6</td><td class='num'>6</td><td class='num'>15.0%</td><td class='num'>30.0%</td><td class='num'>30.0%</td><td class='num'>-52.6%</td></tr>
+      <tr><td>MLO favorite</td><td class='num'>20</td><td class='num'>3</td><td class='num'>5</td><td class='num'>11</td><td class='num'>15.0%</td><td class='num'>25.0%</td><td class='num'>55.0%</td><td class='num'>-53.5%</td></tr>
+      <tr><td>MLO 3rd-choice</td><td class='num'>20</td><td class='num'>2</td><td class='num'>5</td><td class='num'>6</td><td class='num'>10.0%</td><td class='num'>25.0%</td><td class='num'>30.0%</td><td class='num'>-55.4%</td></tr>
+      <tr><td>Post position (out)</td><td class='num'>20</td><td class='num'>2</td><td class='num'>5</td><td class='num'>6</td><td class='num'>10.0%</td><td class='num'>25.0%</td><td class='num'>30.0%</td><td class='num'>-67.0%</td></tr>
+      <tr><td>Random</td><td class='num'>20</td><td class='num'>2</td><td class='num'>4</td><td class='num'>4</td><td class='num'>10.0%</td><td class='num'>20.0%</td><td class='num'>20.0%</td><td class='num'>-0.7%</td></tr>
+      <tr><td>MLO longshot</td><td class='num'>20</td><td class='num'>1</td><td class='num'>3</td><td class='num'>3</td><td class='num'>5.0%</td><td class='num'>15.0%</td><td class='num'>15.0%</td><td class='num'>-19.5%</td></tr>
+      <tr><td>Leading jockey</td><td class='num'>9</td><td class='num'>0</td><td class='num'>3</td><td class='num'>7</td><td class='num'>0.0%</td><td class='num'>33.3%</td><td class='num'>77.8%</td><td class='num'>-100.0%</td></tr>
+      <tr><td>Leading trainer</td><td class='num'>2</td><td class='num'>0</td><td class='num'>1</td><td class='num'>1</td><td class='num'>0.0%</td><td class='num'>50.0%</td><td class='num'>50.0%</td><td class='num'>-100.0%</td></tr>
+</table>
+
+<h2>Overall accuracy (MLO favorite)</h2>
+<table>
+  <tr><th>Races scored</th><th>Win hits</th><th>Place hits</th><th>Show hits</th><th>Win %</th><th>Place %</th><th>Show %</th></tr>
+  <tr><td class='num'>20</td><td class='num'>3</td><td class='num'>5</td>
+      <td class='num'>11</td><td class='num'>15.0%</td>
+      <td class='num'>25.0%</td><td class='num'>55.0%</td></tr>
+</table>
+
+<h2>Per-track breakdown (MLO favorite)</h2>
+<table>
+  <tr><th>Track</th><th class='num'>Races</th><th class='num'>Win</th><th class='num'>Plc</th><th class='num'>Shw</th><th class='num'>Win %</th><th class='num'>Plc %</th><th class='num'>Shw %</th></tr>
+      <tr><td>Gulfstream Park</td><td class='num'>9</td><td class='num'>2</td><td class='num'>3</td><td class='num'>7</td><td class='num'>22.2%</td><td class='num'>33.3%</td><td class='num'>77.8%</td></tr>
+      <tr><td>Saratoga</td><td class='num'>11</td><td class='num'>1</td><td class='num'>2</td><td class='num'>4</td><td class='num'>9.1%</td><td class='num'>18.2%</td><td class='num'>36.4%</td></tr>
+</table>
+
+<h2>Per-race detail (MLO favorite)</h2>
+<table>
+  <tr><th>Card</th><th class='num'>R#</th><th>Predicted</th><th class='num'>MLO</th><th>Actual winner</th><th class='num'>Pay</th><th class='num'>$2 PL</th><th title='Win / Place / Show hits'>W/P/S</th></tr>
+      <tr><td class='card' rowspan='9'>Gulfstream Park 07-03</td><td class='num'>1</td><td class='name'>Shinyhappygroovy</td><td class='num'>3.0</td><td class='name'>High Lateen</td><td class='num'>9.80</td><td class='num neg'>-2.00</td><td class='place'>-/Y/Y</td></tr>
+      <tr><td class='num'>2</td><td class='name'>Arequipe</td><td class='num'>1.8</td><td class='name'>American Roadster</td><td class='num'>21.40</td><td class='num neg'>-2.00</td><td class='show'>-/-/Y</td></tr>
+      <tr><td class='num'>3</td><td class='name'>Sara&#x27;s Rose</td><td class='num'>1.8</td><td class='name'>Game Energy</td><td class='num'>14.80</td><td class='num neg'>-2.00</td><td class='show'>-/-/Y</td></tr>
+      <tr><td class='num'>4</td><td class='name'>Crystal River</td><td class='num'>2.0</td><td class='name'>Crystal River</td><td class='num'>4.40</td><td class='num pos'>+2.40</td><td class='hit'>Y/Y/Y</td></tr>
+      <tr><td class='num'>5</td><td class='name'>Thunder Princess</td><td class='num'>1.8</td><td class='name'>Gulfstream Mary D</td><td class='num'>15.60</td><td class='num neg'>-2.00</td><td class='show'>-/-/Y</td></tr>
+      <tr><td class='num'>6</td><td class='name'>Elegante Miz</td><td class='num'>2.5</td><td class='name'>Hot Rod Honey</td><td class='num'>6.00</td><td class='num neg'>-2.00</td><td class='show'>-/-/Y</td></tr>
+      <tr><td class='num'>7</td><td class='name'>Ifyousaidso</td><td class='num'>2.0</td><td class='name'>Laila Bella Girl</td><td class='num'>36.00</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>8</td><td class='name'>Back Em Up</td><td class='num'>2.0</td><td class='name'>Back Em Up</td><td class='num'>4.60</td><td class='num pos'>+2.60</td><td class='hit'>Y/Y/Y</td></tr>
+      <tr><td class='num'>9</td><td class='name'>Spirit of the Law</td><td class='num'>3.0</td><td class='name'>Malcolm X (PER)</td><td class='num'>5.80</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='card' rowspan='11'>Saratoga 07-03</td><td class='num'>1</td><td class='name'>Fact</td><td class='num'>2.5</td><td class='name'>McAfee</td><td class='num'>10.34</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>2</td><td class='name'>Timbertop</td><td class='num'>3.0</td><td class='name'>Allura</td><td class='num'>26.40</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>3</td><td class='name'>Mo for the King</td><td class='num'>1.6</td><td class='name'>Anyway</td><td class='num'>5.34</td><td class='num neg'>-2.00</td><td class='show'>-/-/Y</td></tr>
+      <tr><td class='num'>4</td><td class='name'>Private Flight</td><td class='num'>2.5</td><td class='name'>Rumblyoungmanrumbl</td><td class='num'>46.60</td><td class='num neg'>-2.00</td><td class='show'>-/-/Y</td></tr>
+      <tr><td class='num'>5</td><td class='name'>Minute by Minute</td><td class='num'>3.5</td><td class='name'>Oscar&#x27;s Encore</td><td class='num'>8.18</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>6</td><td class='name'>Metatron&#x27;s Muse</td><td class='num'>2.5</td><td class='name'>Metatron&#x27;s Muse</td><td class='num'>9.62</td><td class='num pos'>+7.62</td><td class='hit'>Y/Y/Y</td></tr>
+      <tr><td class='num'>7</td><td class='name'>Belgian</td><td class='num'>3.0</td><td class='name'>White Smoke Rising</td><td class='num'>7.76</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>8</td><td class='name'>Smexy (IRE)</td><td class='num'>3.5</td><td class='name'>To a Flame</td><td class='num'>7.50</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>9</td><td class='name'>Luminous Beauty</td><td class='num'>3.0</td><td class='name'>Harper&#x27;s Corner</td><td class='num'>26.00</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>10</td><td class='name'>Arizona Territory</td><td class='num'>2.5</td><td class='name'>Heeere&#x27;s Johnny</td><td class='num'>32.20</td><td class='num neg'>-2.00</td><td class='miss'>-/-/-</td></tr>
+      <tr><td class='num'>11</td><td class='name'>Dividend Recap</td><td class='num'>2.0</td><td class='name'>Brokealltherules</td><td class='num'>5.46</td><td class='num neg'>-2.00</td><td class='place'>-/Y/Y</td></tr>
+</table>
+
+<h2>Pipeline timings</h2>
+<table>
+  <tr><th>Step</th><th class='num'>Duration</th></tr>
+      <tr><td>Phase 1 - predict (entries + pure baselines)</td><td class='num'>0.0s</td></tr>
+      <tr><td>Phase 2 - results (HRN direct)</td><td class='num'>0.0s</td></tr>
+      <tr><td>Phase 2b - parse.bot fallback</td><td class='num'>0.0s</td></tr>
+      <tr><td>Phase 2c - connection baselines (standings)</td><td class='num'>0.0s</td></tr>
+      <tr><td>Phase 3 - report</td><td class='num'>0.0s</td></tr>
+  <tr><td><strong>End-to-end total</strong></td><td class='num'><strong>0.0s</strong></td></tr>
+</table>
+<p class="meta">Races predicted: 20 &middot; scored: 18 &middot; parse.bot fallback fills: 0. Cumulative timings also appended to <code>reports/timings.log</code>.</p>
+<h2>Methodology</h2>
+<div class="methodology">
+  <p><strong>Predictors compared.</strong> Ten predictors are scored side by side:
+  <ul>
+  <li><em>MLO favorite / 2nd / 3rd</em> - the 1st, 2nd, and 3rd-lowest morning-line odds
+  horses. The favorite is the track handicapper's win-probability estimate; the 2nd/3rd
+  choices probe whether the value lies just off the favorite.</li>
+  <li><em>MLO longshot</em> - the <em>highest</em>-MLO horse (longest shot). Directly tests the
+  favorite-longshot bias direction: does systematically backing longshots lose more or less
+  than backing the favorite?</li>
+  <li><em>Post position (in / out)</em> - the lowest (inside) and highest (outside) post. A
+  real structural factor at some tracks / distances; the outside variant is the counter-signal.</li>
+  <li><em>Leading jockey / trainer</em> - bet the horse ridden (or trained) by the meet's
+  winningest jockey / trainer <em>as of this race date</em>, computed from stored results with
+  race_date strictly before this race (no look-ahead, no external fetch). Classic "bet the meet
+  leader" angles. These abstain (no pick, not scored) for races with no prior data at the track
+  (e.g. the first day of the window) or when the leader has no mount, so their "Races" count is
+  lower than the pure baselines'.</li>
+  <li><em>Random</em> - a deterministic random pick (seeded per race). The chance floor: if
+  the other baselines don't beat this, they aren't carrying real signal.</li>
+  <li><em>Consensus (blend)</em> - the rank-point aggregate (1st=5, 2nd=3, 3rd=1) across all
+  listed baselines. With no external expert picks, this blends naive signals (including
+  contradictory ones like favorite vs. longshot), so it is increasingly diluted as predictors
+  are added.</li>
+  </ul>
+  No external expert picks are used (free pick sources are bot-walled / JS-rendered; see the
+  going-forward AI-Horse-Picks archiver plan for adding a real expert row in future windows).</p>
+  <p><strong>Entries.</strong> Fetched from Horse Racing Nation
+  (<code>entries.horseracingnation.com</code>), which is server-rendered HTML (not bot-walled)
+  and also supplies morning-line odds, post position, and scratch / MTO / also-eligible status.</p>
+  <p><strong>Results.</strong> Finish order and $2 win/place/show payoffs come from Horse
+  Racing Nation's entries-results page (<code>entries.horseracingnation.com</code>), the same
+  server-rendered source used for entries. Each race's <code>table-payouts</code> block lists the
+  top-4 finishers in order with WPS mutuel payoffs - free, unlimited, one page per track/date.
+  The parse.bot APIs (BloodHorse bulk top-3, Equibase per-race + payoffs) remain registered as a
+  fallback for any race HRN hasn't populated.</p>
+  <p><strong>Scoring.</strong> <em>Win</em> = predicted horse finished 1st. <em>Place</em> =
+  finished 1st or 2nd. <em>Show</em> = finished 1st, 2nd, or 3rd. Rates are hits / races scored.
+  Finish positions 1-4 are resolved from the payouts table; horses finishing &gt; 4 (also-rans)
+  are not individually ordered but are not needed for win/place/show scoring.</p>
+  <p><strong>ROI.</strong> ROI is the profit/loss on a $2 <em>win</em> bet on each predictor's
+  top pick, summed over the races with mutuel payoff data, divided by the total wagered
+  ($2 per race). A win pays <code>winner_payoff - 2</code>; a loss costs <code>-2</code>. Note
+  that <em>hit rate and ROI tell different stories</em>: betting favorites (MLO) wins most often
+  but each win pays little, while longshots win rarely but pay a lot - so a higher win rate does
+  not imply a better ROI (the favorite-longshot bias).</p>
+  <p><strong>Matching.</strong> HRN results carry the program number directly (the payouts-table
+  image alt); scoring keys on program number with a normalized horse-name fallback.</p>
+  <p><strong>Limitations.</strong> Tracks with no racing in the window are reported as such.
+  HRN's payouts table resolves only the top-4; also-ran order is not captured. The sample is
+  small (one week, a few tracks), so ROI figures are noisy and should not be read as stable
+  long-run expectations.</p>
+</div>
+</body>
+</html>

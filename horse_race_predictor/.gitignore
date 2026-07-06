@@ -1,0 +1,10 @@
+# Backtest report output: ignore all generated reports/logs except the
+# published sample report. The real per-window HTML reports and run logs are
+# reproducible from the DB + weekly_runner.py, so they stay local.
+reports/*
+!reports/sample_output.html
+
+# Runtime data (also covered by the root .gitignore, repeated for self-containment)
+horse_tracker.db
+*.db
+__pycache__/
