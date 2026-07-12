@@ -51,7 +51,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup uv + Python
-        uses: astral-sh/setup-uv@v8
+        # setup-uv v7 is the latest major with a moving major tag (v8 has no
+        # moving tag yet as of Jul 2026). v7 runs on Node 24 (clears the Node 20
+        # deprecation). Bump to @v8 once astral-sh publishes a `v8` moving tag.
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
           enable-cache: true
