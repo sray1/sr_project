@@ -1,0 +1,42 @@
+{
+  "add_mlo_favorite": true,
+  "races": [
+    {
+      "track": "SAR", "race": 10, "date": "2026-07-11",
+      "picks": [
+        {"source": "truenicks", "picks": [
+          {"program_number": "4", "rank": 1},
+          {"program_number": "1", "rank": 2},
+          {"program_number": "5", "rank": 3},
+          {"program_number": "6", "rank": 4}
+        ]},
+        {"source": "hrn_zipse", "picks": [
+          {"program_number": "1", "rank": 1},
+          {"program_number": "2", "rank": 2},
+          {"program_number": "4", "rank": 3}
+        ]},
+        {"source": "usracing", "picks": [
+          {"program_number": "1", "rank": 1},
+          {"program_number": "6", "rank": 2},
+          {"program_number": "4", "rank": 3}
+        ]},
+        {"source": "offshoresportsbooks", "picks": [
+          {"program_number": "4", "rank": 1}
+        ]}
+      ]
+    },
+    {
+      "track": "MTH", "race": 1, "date": "2026-07-10",
+      "picks": [
+        {"source": "eric_solomon", "picks": [
+          {"program_number": "2", "rank": 1},
+          {"program_number": "4", "rank": 2}
+        ]},
+        {"source": "ultimatecapper", "picks": [
+          {"program_number": "6", "rank": 1}
+        ]}
+      ],
+      "results": ["2", "1", "6", "4"]
+    }
+  ]
+}
