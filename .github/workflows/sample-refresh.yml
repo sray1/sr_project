@@ -50,20 +50,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Persist the sample DB between runs so accuracy history accumulates.
-      # Unique key per run-id → always a restore MISS → the action auto-saves
-      # the updated DB under this new key at job end; restore-keys pulls the
-      # most recent prior sample-db-* cache. NOTE: GHA cache is evicted after 7
-      # days of no access — daily runs keep it warm; if a long outage occurs the
-      # DB resets and accuracy history rebuilds over subsequent runs (the report
-      # still generates). Durable storage is a Phase 2 concern.
-      - name: Restore sample DB cache
-        uses: actions/cache@v4
-        with:
-          path: stock_target_tracker/sample_tracker.db
-          key: sample-db-${{ github.run_id }}
-          restore-keys: sample-db-
-
       - name: Setup uv + Python
         uses: astral-sh/setup-uv@v4
         with:
@@ -73,23 +59,75 @@ jobs:
       - name: Install dependencies
         run: uv sync --no-install-project
 
+      # Skip the whole refresh on days the US market was closed (NYSE holidays
+      # and special closures such as days of mourning). exchange_calendars'
+      # XNYS calendar encodes the full NYSE schedule, so there's no manual
+      # holiday list to maintain each year. The cron already restricts to
+      # Mon-Fri; this gate additionally drops weekday holidays. Fails OPEN: if
+      # the check itself errors, run anyway so a guard bug never causes us to
+      # miss a real trading day.
+      - name: Check if NYSE was in session today
+        id: market
+        run: |
+          uv run python - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          try:
+              import pandas as pd
+              import exchange_calendars as xcals
+              cal = xcals.get_calendar("XNYS")
+              today = datetime.now(ZoneInfo("America/New_York")).date()
+              is_open = bool(cal.is_session(pd.Timestamp(today)))
+              print(f"NYSE session check: {today} ({today.strftime('%A')}) -> open={is_open}")
+          except Exception as e:
+              print(f"WARNING: market-open check failed ({e!r}); failing OPEN (will run).")
+              is_open = True
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"market_open={'true' if is_open else 'false'}\n")
+          PY
+
+      - name: Skipped — market closed
+        if: steps.market.outputs.market_open != 'true'
+        run: echo "::notice::NYSE was not in session today; skipping refresh and deploy."
+
+      # Persist the sample DB between runs so accuracy history accumulates.
+      # Unique key per run-id → always a restore MISS → the action auto-saves
+      # the updated DB under this new key at job end; restore-keys pulls the
+      # most recent prior sample-db-* cache. Gated on market_open so holidays
+      # neither restore nor save (no redundant cache writes). NOTE: GHA cache is
+      # evicted after 7 days of no access — daily runs keep it warm; if a long
+      # outage occurs the DB resets and accuracy history rebuilds over
+      # subsequent runs. Durable storage is a Phase 2 concern.
+      - name: Restore sample DB cache
+        if: steps.market.outputs.market_open == 'true'
+        uses: actions/cache@v4
+        with:
+          path: stock_target_tracker/sample_tracker.db
+          key: sample-db-${{ github.run_id }}
+          restore-keys: sample-db-
+
       # On a cache miss the DB file is absent; create tables + load the sample
       # whitelist. Idempotent on an existing DB (CREATE TABLE IF NOT EXISTS +
       # upsert), so safe to always run.
       - name: Init sample DB tables + whitelist
+        if: steps.market.outputs.market_open == 'true'
         run: uv run python stock_target_tracker/tracker.py init --csv stock_target_tracker/input/sample_symbols.csv
 
       - name: Refresh (fetch + prices + accuracy + report)
+        if: steps.market.outputs.market_open == 'true'
         run: uv run python stock_target_tracker/refresh.py --mode sample --full
 
       # Stage the generated report as index.html for the Pages deploy.
       - name: Stage report for Pages
+        if: steps.market.outputs.market_open == 'true'
         run: mkdir -p pub && cp stock_target_tracker/output/sample_output.html pub/index.html
 
       # Publish to the gh-pages branch as an orphan (mirrors deploy_gh_pages.py:
       # single index.html, force-push, no shared history). The local
       # deploy_gh_pages.py remains valid for manual deploys.
       - name: Deploy to gh-pages
+        if: steps.market.outputs.market_open == 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -68,7 +68,11 @@ and publishes `sample_output.html` to gh-pages automatically — no local work
 required. It triggers:
 
 - **Schedule** — `30 21 * * 1-5` UTC (weekdays, ~5:30pm EDT / 4:30pm EST, after
-  the 16:00 ET US market close).
+  the 16:00 ET US market close). A guard step checks the NYSE session calendar
+  (`exchange_calendars` XNYS) and **skips the refresh + deploy on market holidays
+  and special closures** (days of mourning, etc.) — no manual holiday list to
+  maintain. The check fails open (runs anyway if the calendar lookup errors),
+  so a guard bug never causes a missed trading day.
 - **Manual** — the *Run workflow* button on the Actions tab (`workflow_dispatch`).
 - **Push to `main`** — only on changes under `stock_target_tracker/`, the
   workflow file itself, `pyproject.toml`, or `uv.lock`.

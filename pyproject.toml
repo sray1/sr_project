@@ -7,6 +7,7 @@ dependencies = [
     "apscheduler>=3.11.2",
     "beautifulsoup4>=4.15.0",
     "draft-kings>=3.1.0",
+    "exchange-calendars>=4.13.2",
     "matplotlib>=3.10.9",
     "nba-api>=1.11.4",
     "numpy>=2.0.0",
