@@ -1,0 +1,101 @@
+name: Sample Report Refresh
+
+# Phase 1 of the online pipeline: runs the SAMPLE (non-personal) refresh on a
+# schedule and publishes sample_output.html to the gh-pages branch so the public
+# GitHub Pages site (https://sray1.github.io/sr_project/) stays fresh with zero
+# local work.
+#
+# This workflow NEVER touches personal data: it runs refresh.py --mode sample
+# only (sample_symbols.csv whitelist, isolated sample_tracker.db, writes only
+# sample_output.html, write_latest=False). portfolio_whitelist.csv, latest.html,
+# and stock_tracker.db are not referenced.
+
+on:
+  schedule:
+    # 21:30 UTC, Mon-Fri (~5:30pm EDT / 4:30pm EST) — after the 16:00 ET US
+    # market close, leaving time for end-of-day prices to settle before fetch.
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sample-refresh.yml'
+      - 'stock_target_tracker/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+# One run at a time; cancel a superseded run (e.g. a push landing during a
+# scheduled run) rather than running two deploys concurrently.
+concurrency:
+  group: sample-refresh
+  cancel-in-progress: true
+
+# Required to push the generated report to the gh-pages branch.
+permissions:
+  contents: write
+
+env:
+  # Isolated sample DB (non-personal) — same path refresh.py uses in sample mode.
+  STT_DB_PATH: ${{ github.workspace }}/stock_target_tracker/sample_tracker.db
+  # API keys live in repo Secrets (Settings → Secrets and variables → Actions).
+  # If a key is absent, that source skips gracefully (prints "key not set") and
+  # the run still succeeds with whatever sources remain (e.g. Yahoo-only).
+  FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+  OANOR_API_KEY: ${{ secrets.OANOR_API_KEY }}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Persist the sample DB between runs so accuracy history accumulates.
+      # Unique key per run-id → always a restore MISS → the action auto-saves
+      # the updated DB under this new key at job end; restore-keys pulls the
+      # most recent prior sample-db-* cache. NOTE: GHA cache is evicted after 7
+      # days of no access — daily runs keep it warm; if a long outage occurs the
+      # DB resets and accuracy history rebuilds over subsequent runs (the report
+      # still generates). Durable storage is a Phase 2 concern.
+      - name: Restore sample DB cache
+        uses: actions/cache@v4
+        with:
+          path: stock_target_tracker/sample_tracker.db
+          key: sample-db-${{ github.run_id }}
+          restore-keys: sample-db-
+
+      - name: Setup uv + Python
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --no-install-project
+
+      # On a cache miss the DB file is absent; create tables + load the sample
+      # whitelist. Idempotent on an existing DB (CREATE TABLE IF NOT EXISTS +
+      # upsert), so safe to always run.
+      - name: Init sample DB tables + whitelist
+        run: uv run python stock_target_tracker/tracker.py init --csv stock_target_tracker/input/sample_symbols.csv
+
+      - name: Refresh (fetch + prices + accuracy + report)
+        run: uv run python stock_target_tracker/refresh.py --mode sample --full
+
+      # Stage the generated report as index.html for the Pages deploy.
+      - name: Stage report for Pages
+        run: mkdir -p pub && cp stock_target_tracker/output/sample_output.html pub/index.html
+
+      # Publish to the gh-pages branch as an orphan (mirrors deploy_gh_pages.py:
+      # single index.html, force-push, no shared history). The local
+      # deploy_gh_pages.py remains valid for manual deploys.
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: pub
+          force_orphan: true
+          keep_files: false
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'Auto refresh: sample report (run ${{ github.run_id }})'

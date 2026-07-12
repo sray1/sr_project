@@ -61,6 +61,47 @@ Pages site publishes `sample_output.html` (the non-personal sample) via
 `deploy_gh_pages.py` to https://sray1.github.io/sr_project/ . See the deploy
 script header for details.
 
+## Automated Sample Refresh (GitHub Actions)
+
+`.github/workflows/sample-refresh.yml` runs the **sample** pipeline in the cloud
+and publishes `sample_output.html` to gh-pages automatically — no local work
+required. It triggers:
+
+- **Schedule** — `30 21 * * 1-5` UTC (weekdays, ~5:30pm EDT / 4:30pm EST, after
+  the 16:00 ET US market close).
+- **Manual** — the *Run workflow* button on the Actions tab (`workflow_dispatch`).
+- **Push to `main`** — only on changes under `stock_target_tracker/`, the
+  workflow file itself, `pyproject.toml`, or `uv.lock`.
+
+The job checks out the repo, restores the isolated `sample_tracker.db` from
+cache (so accuracy history accumulates across runs), `uv sync`s deps, runs
+`tracker.py init` + `refresh.py --mode sample --full`, then deploys
+`sample_output.html` → gh-pages as an orphan (same mechanism as
+`deploy_gh_pages.py`). **It never touches personal data** — sample mode only
+(`sample_symbols.csv`, `sample_tracker.db`, `sample_output.html`,
+`write_latest=False`); `portfolio_whitelist.csv`, `latest.html`, and
+`stock_tracker.db` are not referenced.
+
+**One-time setup — add API keys as repo Secrets**
+(Settings → Secrets and variables → Actions):
+`FMP_API_KEY` and `OANOR_API_KEY`. If a key is absent, that source skips
+gracefully and the run still succeeds (e.g. Yahoo-only); add both for full
+coverage. `GITHUB_TOKEN` (used to push gh-pages) is provided automatically.
+
+**Caveats:**
+- **Bot detection:** MarketBeat scraping (and sometimes Yahoo) is more likely to
+  be 403/Cloudflare-blocked from GitHub Actions datacenter IPs than from a
+  residential connection. Sources degrade gracefully (empty list, never crash),
+  so the run won't fail — but dated MarketBeat targets may be thinner than local
+  runs. The keyed APIs (oanor, FMP) work fine from anywhere.
+- **DB persistence:** the sample DB is kept in the GHA cache, which is evicted
+  after 7 days of no access. Daily runs keep it warm; a long outage resets it
+  and accuracy history rebuilds over subsequent runs. Durable storage for the
+  personal *portfolio* DB is a Phase 2 concern.
+- **Scheduled runs** happen on the default branch only and are auto-disabled by
+  GitHub after 60 days of repo inactivity (a push re-enables them).
+- **Minutes:** public repo → unlimited GHA minutes.
+
 ## Data Sources
 
 | Source | Method | API Key Required | Rate Limit |
