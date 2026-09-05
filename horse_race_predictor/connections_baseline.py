@@ -83,7 +83,9 @@ def save_picks_for_races(races):
     excluded (a race doesn't see other races on its own date).
 
     Clears stale connection picks for races with no active field. Returns the
-    count of non-empty pick lists saved.
+    set of race_ids whose connection picks were written (empty or not) - the
+    caller only needs to re-score those races, since every other source's
+    snapshots are unchanged.
     """
     import db
     from race import filter_active
@@ -92,6 +94,7 @@ def save_picks_for_races(races):
     for r in races:
         by_track[r["track"]].append(r)
     saved = 0
+    touched = set()
     for track, trs in by_track.items():
         trs_sorted = sorted(trs, key=lambda x: (x["date"], x["race_number"]))
         first_date = trs_sorted[0]["date"]
@@ -107,6 +110,7 @@ def save_picks_for_races(races):
                 if not active:
                     db.save_picks(r["race_id"], SOURCE_JOCKEY, [])
                     db.save_picks(r["race_id"], SOURCE_TRAINER, [])
+                    touched.add(r["race_id"])
                     continue
                 for name, fn, tally in [(SOURCE_JOCKEY, predict_leading_jockey, j_tally),
                                          (SOURCE_TRAINER, predict_leading_trainer, t_tally)]:
@@ -114,6 +118,7 @@ def save_picks_for_races(races):
                     db.save_picks(r["race_id"], name, picks)
                     if picks:
                         saved += 1
+                touched.add(r["race_id"])
             # After this date's races are picked, add its winners to the tallies
             # so later dates see them (same-date races never see each other).
             for r in day:
@@ -122,4 +127,4 @@ def save_picks_for_races(races):
                     j_tally[wj] = j_tally.get(wj, 0) + 1
                 if wt:
                     t_tally[wt] = t_tally.get(wt, 0) + 1
-    return saved
+    return touched

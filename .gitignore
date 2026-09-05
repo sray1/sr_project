@@ -224,3 +224,7 @@ dfs_showdown_analysis.txt
 
 # DFS output files (timestamped results)
 dfs_lineup_optimizer/output/
+
+# SQLite WAL sidecar files (journal_mode=WAL)
+*.db-wal
+*.db-shm

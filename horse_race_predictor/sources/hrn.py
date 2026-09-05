@@ -25,6 +25,14 @@ import re
 
 from utils import retry_with_backoff, rate_limit
 
+# Prefer lxml (2-5x faster page parses) when installed; fall back to the stdlib
+# parser so the module keeps working in a bare venv.
+try:
+    import lxml.etree  # noqa: F401
+    _BS_PARSER = "lxml"
+except ImportError:
+    _BS_PARSER = "html.parser"
+
 # Equibase track code -> HRN URL slug. Extend as needed; unknown codes fall back
 # to the lowercased code (works for many single-word track names).
 TRACK_SLUGS = {
@@ -121,17 +129,24 @@ def fetch_card_and_results(track_code, race_date):
         return {}, {}
     if not html:
         return {}, {}
-    return _parse_card_html(html), _parse_results_card_html(html)
+    # Parse the page into a soup ONCE; both extractors walk the same tree.
+    # (Building two soups over the same ~300KB page doubles parse time.)
+    soup = _soup(html)
+    return _parse_entries_tables(soup), _parse_results_tables(soup)
 
 
-def _parse_card_html(html):
-    """Parse all race tables on an HRN entries page -> {race_number: [entries]}.
+def _soup(html):
+    """Build a BeautifulSoup tree with the fastest available parser."""
+    from bs4 import BeautifulSoup
+    return BeautifulSoup(html, _BS_PARSER)
+
+
+def _parse_entries_tables(soup):
+    """Extract all `table-entries` tables from a soup -> {race_number: [entries]}.
 
     Race numbers are assigned by table order (1-based). If the page is the
     generic day-summary fallback (no table-entries tables), returns {}.
     """
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table", class_="table-entries")
     card = {}
     for i, table in enumerate(tables, 1):
@@ -143,6 +158,12 @@ def _parse_card_html(html):
         if entries:
             card[i] = entries
     return card
+
+
+def _parse_card_html(html):
+    """Parse HRN entries page HTML -> {race_number: [entries]}. Soup-building
+    wrapper around _parse_entries_tables for one-off callers/tests."""
+    return _parse_entries_tables(_soup(html))
 
 
 def _fetch_html(url):
@@ -163,9 +184,7 @@ def _fetch_html(url):
 
 def _parse_entries_html(html, race_number):
     """Parse HRN entries page -> list of entry dicts for the requested race."""
-    from bs4 import BeautifulSoup
-
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
     tables = soup.find_all("table", class_="table-entries")
     if race_number < 1 or race_number > len(tables):
         return []
@@ -222,11 +241,17 @@ def fetch_results_card(track_code, race_date):
 def _parse_results_card_html(html):
     """Parse all `table-payouts` tables -> {race_number: [result_dicts]}.
 
+    Soup-building wrapper around _parse_results_tables for one-off callers/tests.
+    """
+    return _parse_results_tables(_soup(html))
+
+
+def _parse_results_tables(soup):
+    """Extract all `table-payouts` tables from a soup -> {race_number: [result_dicts]}.
+
     Race numbers are assigned by payouts-table order (1-based), which matches
     the entries-table order on the same page.
     """
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html, "html.parser")
     card = {}
     for i, table in enumerate(soup.find_all("table", class_="table-payouts"), 1):
         body = table.find("tbody")

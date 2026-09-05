@@ -43,11 +43,12 @@ def main():
 
     # Phase 2c: connection baselines via running tally (fast).
     t2c = time.time()
-    saved = connections_baseline.save_picks_for_races(predicted)
+    touched = connections_baseline.save_picks_for_races(predicted)
     for p in predicted:
         accuracy_mod.run_accuracy_checks(p["race_id"])
     p2c = time.time() - t2c
-    print(f"Phase 2c: {saved} connection pick-lists, re-scored {len(predicted)} races ({p2c:.1f}s)")
+    print(f"Phase 2c: {len(touched)} races with connection picks, "
+          f"re-scored {len(predicted)} races ({p2c:.1f}s)")
 
     # Phase 3: report with authentic Phase 1/2 timings from the run log.
     t3 = time.time()

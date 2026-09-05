@@ -10,17 +10,45 @@ stock_target_tracker/db.py.
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from utils import DB_PATH  # honors HRP_DB_PATH env override
 
 
 def get_connection():
-    """Get a connection to the SQLite database."""
+    """Get a connection to the SQLite database.
+
+    WAL + synchronous=NORMAL make per-statement commits much cheaper (~5x
+    measured) - this app is a single writer doing many small upserts, which is
+    exactly the pattern the default delete-journal fsync-per-commit hurts.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
+
+
+@contextmanager
+def connect(conn=None):
+    """Yield a DB connection, closing it only if we opened it.
+
+    Lets hot loops reuse one connection across many small reads/writes
+    instead of paying connect/close per call:
+        with db.connect() as c:
+            for rid in ids:
+                entries = db.get_entries(rid, conn=c)
+    """
+    if conn is not None:
+        yield conn
+    else:
+        c = get_connection()
+        try:
+            yield c
+        finally:
+            c.close()
 
 
 def init_db():
@@ -211,31 +239,30 @@ def save_entries(race_id, entries):
     conn.close()
 
 
-def get_entries(race_id):
-    """Return list of entry dicts for a race, ordered by post_position."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM entries WHERE race_id = ? ORDER BY "
-        "CASE WHEN post_position IS NULL THEN 9999 ELSE post_position END",
-        (race_id,),
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
+def get_entries(race_id, conn=None):
+    """Return list of entry dicts for a race, ordered by post_position.
+
+    Pass `conn=` to reuse an open connection in hot loops."""
+    with connect(conn) as c:
+        cursor = c.cursor()
+        cursor.execute(
+            "SELECT * FROM entries WHERE race_id = ? ORDER BY "
+            "CASE WHEN post_position IS NULL THEN 9999 ELSE post_position END",
+            (race_id,),
+        )
+        return [dict(r) for r in cursor.fetchall()]
 
 
-def get_race_id(track_code, race_number, race_date):
+def get_race_id(track_code, race_number, race_date, conn=None):
     """Look up a race_id by identity. Returns None if not stored."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id FROM races WHERE track_code = ? AND race_number = ? AND race_date = ?",
-        (track_code, race_number, race_date),
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return row["id"] if row else None
+    with connect(conn) as c:
+        cursor = c.cursor()
+        cursor.execute(
+            "SELECT id FROM races WHERE track_code = ? AND race_number = ? AND race_date = ?",
+            (track_code, race_number, race_date),
+        )
+        row = cursor.fetchone()
+        return row["id"] if row else None
 
 
 def get_race(race_id):
@@ -271,23 +298,21 @@ def save_picks(race_id, source, picks):
     conn.close()
 
 
-def get_picks(race_id, source=None):
+def get_picks(race_id, source=None, conn=None):
     """Return pick dicts for a race, optionally filtered by source."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    if source:
-        cursor.execute(
-            "SELECT * FROM picks WHERE race_id = ? AND source = ? ORDER BY rank",
-            (race_id, source),
-        )
-    else:
-        cursor.execute(
-            "SELECT * FROM picks WHERE race_id = ? ORDER BY source, rank",
-            (race_id,),
-        )
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
+    with connect(conn) as c:
+        cursor = c.cursor()
+        if source:
+            cursor.execute(
+                "SELECT * FROM picks WHERE race_id = ? AND source = ? ORDER BY rank",
+                (race_id, source),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM picks WHERE race_id = ? ORDER BY source, rank",
+                (race_id,),
+            )
+        return [dict(r) for r in cursor.fetchall()]
 
 
 # ── Results ──────────────────────────────────────────────────────────────
@@ -311,62 +336,70 @@ def save_results(race_id, results):
     conn.close()
 
 
-def get_results(race_id):
+def get_results(race_id, conn=None):
     """Return result dicts ordered by finish_position."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM results WHERE race_id = ? ORDER BY "
-        "CASE WHEN finish_position IS NULL THEN 9999 ELSE finish_position END",
-        (race_id,),
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
+    with connect(conn) as c:
+        cursor = c.cursor()
+        cursor.execute(
+            "SELECT * FROM results WHERE race_id = ? ORDER BY "
+            "CASE WHEN finish_position IS NULL THEN 9999 ELSE finish_position END",
+            (race_id,),
+        )
+        return [dict(r) for r in cursor.fetchall()]
 
 
 # ── Accuracy snapshots ───────────────────────────────────────────────────
 
 def save_accuracy_snapshot(race_id, source, top_pick_horse, finish_position,
                            hit_win, hit_place, hit_show):
-    """Upsert an accuracy snapshot for (race_id, source)."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    now = _now()
-    cursor.execute(
-        "SELECT id FROM accuracy_snapshots WHERE race_id = ? AND source = ?",
-        (race_id, source),
-    )
-    row = cursor.fetchone()
-    if row:
-        cursor.execute(
-            "UPDATE accuracy_snapshots SET top_pick_horse = ?, finish_position = ?, "
-            "hit_win = ?, hit_place = ?, hit_show = ?, computed_at = ? WHERE id = ?",
-            (top_pick_horse, finish_position, hit_win, hit_place, hit_show, now, row["id"]),
-        )
-    else:
-        cursor.execute(
-            "INSERT INTO accuracy_snapshots (race_id, source, top_pick_horse, "
-            "finish_position, hit_win, hit_place, hit_show, computed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (race_id, source, top_pick_horse, finish_position,
-             hit_win, hit_place, hit_show, now),
-        )
-    conn.commit()
-    conn.close()
+    """Upsert one accuracy snapshot for (race_id, source)."""
+    save_accuracy_snapshots(
+        [(race_id, source, top_pick_horse, finish_position, hit_win, hit_place, hit_show)])
 
 
-def get_accuracy_snapshots(race_id=None):
+def save_accuracy_snapshots(rows, conn=None):
+    """Batch-upsert accuracy snapshots in a single commit.
+
+    `rows` is an iterable of (race_id, source, top_pick_horse, finish_position,
+    hit_win, hit_place, hit_show) tuples. Same upsert semantics as
+    save_accuracy_snapshot, but one transaction for the whole batch - a scored
+    race writes ~10+ snapshots, and per-row commits dominate that cost.
+    """
+    with connect(conn) as c:
+        cursor = c.cursor()
+        now = _now()
+        for race_id, source, top_pick_horse, finish_position, hit_win, hit_place, hit_show in rows:
+            cursor.execute(
+                "SELECT id FROM accuracy_snapshots WHERE race_id = ? AND source = ?",
+                (race_id, source),
+            )
+            row = cursor.fetchone()
+            if row:
+                cursor.execute(
+                    "UPDATE accuracy_snapshots SET top_pick_horse = ?, finish_position = ?, "
+                    "hit_win = ?, hit_place = ?, hit_show = ?, computed_at = ? WHERE id = ?",
+                    (top_pick_horse, finish_position, hit_win, hit_place, hit_show, now, row["id"]),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO accuracy_snapshots (race_id, source, top_pick_horse, "
+                    "finish_position, hit_win, hit_place, hit_show, computed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (race_id, source, top_pick_horse, finish_position,
+                     hit_win, hit_place, hit_show, now),
+                )
+        c.commit()
+
+
+def get_accuracy_snapshots(race_id=None, conn=None):
     """Return accuracy snapshots, optionally for one race."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    if race_id:
-        cursor.execute("SELECT * FROM accuracy_snapshots WHERE race_id = ?", (race_id,))
-    else:
-        cursor.execute("SELECT * FROM accuracy_snapshots")
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
+    with connect(conn) as c:
+        cursor = c.cursor()
+        if race_id:
+            cursor.execute("SELECT * FROM accuracy_snapshots WHERE race_id = ?", (race_id,))
+        else:
+            cursor.execute("SELECT * FROM accuracy_snapshots")
+        return [dict(r) for r in cursor.fetchall()]
 
 
 def get_scored_races():

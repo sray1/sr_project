@@ -149,12 +149,23 @@ def run_backtest(start_date, end_date, tracks, do_report=True, html_path=None,
     t_phase2b = time.time()
     filled = 0
     if not skip_equibase_fill:
+        refetched = {}  # (track, date) -> results card from ONE fresh HRN page load
         for p in predicted:
             race_id = p["race_id"]
             if db.get_results(race_id):
                 continue  # already scored via HRN
-            race = Race.from_inputs(p["track"], p["race_number"], p["date"])
-            results = sources_mod.fetch_results(race)
+            key = (p["track"], p["date"])
+            if key not in refetched:
+                # One second-chance fetch per (track, date): HRN may have
+                # populated payouts since Phase 1. Per-race refetches of the
+                # same page cost ~1s each (rate limit) for identical content.
+                refetched[key] = hrn.fetch_results_card(p["track"], p["date"])
+            results = refetched[key].get(p["race_number"])
+            if not results:
+                # parse.bot fallback only (HRN page was just re-fetched above).
+                race = Race.from_inputs(p["track"], p["race_number"], p["date"])
+                results = sources_mod.fetch_results(
+                    race, sources=["bloodhorse", "equibase_parse", "equibase_results"])
             if not results:
                 continue
             results = _attach_prog_from_entries(results, db.get_entries(race_id))
@@ -171,14 +182,16 @@ def run_backtest(start_date, end_date, tracks, do_report=True, html_path=None,
     # 2/2b. save_picks_for_races uses a running tally per track (O(n) per track,
     # no look-ahead, same-date races mutually excluded).
     t_phase2c = time.time()
-    connection_picks = connections_baseline.save_picks_for_races(predicted)
-    # Re-score every predicted race so the new connection sources get accuracy
-    # snapshots (run_accuracy_checks upserts all sources).
+    connection_touched = connections_baseline.save_picks_for_races(predicted)
+    # Re-score only the races whose connection picks were just written - every
+    # other source's snapshots are unchanged, so a full re-score is redundant
+    # upserts (run_accuracy_checks upserts all sources for a race).
     for p in predicted:
-        accuracy_mod.run_accuracy_checks(p["race_id"])
+        if p["race_id"] in connection_touched:
+            accuracy_mod.run_accuracy_checks(p["race_id"])
     phase2c_dt = time.time() - t_phase2c
-    print(f"Phase 2c done: {connection_picks} connection-baseline picks across "
-          f"{len(predicted)} races ({phase2c_dt:.1f}s).\n")
+    print(f"Phase 2c done: {len(connection_touched)} races with connection picks "
+          f"(re-scored; {len(predicted)} predicted total) ({phase2c_dt:.1f}s).\n")
 
     # ── Phase 3: report ───────────────────────────────────────────────────
     # Report generation time is itself Phase 3, so measure it with a dry render,
@@ -198,13 +211,18 @@ def run_backtest(start_date, end_date, tracks, do_report=True, html_path=None,
     html = None
     out_path = None
     if do_report:
-        # Dry render to measure report duration (no file/DB/log write).
-        report_mod.generate(start_date, end_date, tracks, timings=timings)
+        # Render once with sentinel timing values, measure the render, then
+        # splice the real timings block into the HTML. (Rendering the full
+        # report twice just to update two numbers doubles Phase 3.)
+        timings["phase3_report"] = -1.0
+        timings["e2e"] = -1.0
+        html = report_mod.generate(start_date, end_date, tracks, timings=timings)
+        sentinel_block = report_mod.timings_block_html(timings)
         timings["phase3_report"] = time.time() - t_phase3
         timings["e2e"] = time.time() - t_start
-        # Final render with complete timings -> save to file + DB + timings.log.
+        html = html.replace(sentinel_block, report_mod.timings_block_html(timings), 1)
         html, out_path = report_mod.generate_and_save(
-            start_date, end_date, tracks, html_path=html_path, timings=timings)
+            start_date, end_date, tracks, html_path=html_path, timings=timings, html=html)
     else:
         timings["phase3_report"] = time.time() - t_phase3
         timings["e2e"] = time.time() - t_start

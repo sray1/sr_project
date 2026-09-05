@@ -53,48 +53,55 @@ def _hit_flags(finish):
             1 if finish <= 3 else 0)
 
 
-def run_accuracy_checks(race_id):
+def run_accuracy_checks(race_id, conn=None):
     """Score every source's top pick + the consensus pick for one race.
 
     Reads entries/picks/results from the DB, writes accuracy_snapshots, and
     returns a list of snapshot dicts (one per source + one for "consensus").
-    Requires results to be stored; returns [] otherwise.
+    Requires results to be stored; returns [] otherwise. All snapshot upserts
+    for the race go out in one batch commit; pass `conn=` to reuse a
+    connection across many races in a loop.
     """
-    entries = db.get_entries(race_id)
-    picks = db.get_picks(race_id)
-    results = db.get_results(race_id)
-    if not results:
-        return []
+    with db.connect(conn) as c:
+        entries = db.get_entries(race_id, conn=c)
+        picks = db.get_picks(race_id, conn=c)
+        results = db.get_results(race_id, conn=c)
+        if not results:
+            return []
 
-    by_prog, by_name = _finish_lookup(results)
-    snapshots = []
+        by_prog, by_name = _finish_lookup(results)
+        snapshots = []
+        snapshot_rows = []  # batched upsert rows (single commit at the end)
 
-    # Per source: top pick = lowest rank (rank 1 first)
-    by_src = defaultdict(list)
-    for p in picks:
-        by_src[p["source"]].append(p)
+        # Per source: top pick = lowest rank (rank 1 first)
+        by_src = defaultdict(list)
+        for p in picks:
+            by_src[p["source"]].append(p)
 
-    for src, ps in by_src.items():
-        top = min(ps, key=lambda p: (p["rank"] if p["rank"] is not None else 99))
-        fin = _resolve_finish(top, by_prog, by_name)
-        hw, hp, hs = _hit_flags(fin)
-        db.save_accuracy_snapshot(race_id, src, top["horse_name"], fin, hw, hp, hs)
-        snapshots.append({
-            "source": src, "top_pick": top["horse_name"], "finish": fin,
-            "hit_win": hw, "hit_place": hp, "hit_show": hs,
-        })
+        for src, ps in by_src.items():
+            top = min(ps, key=lambda p: (p["rank"] if p["rank"] is not None else 99))
+            fin = _resolve_finish(top, by_prog, by_name)
+            hw, hp, hs = _hit_flags(fin)
+            snapshot_rows.append((race_id, src, top["horse_name"], fin, hw, hp, hs))
+            snapshots.append({
+                "source": src, "top_pick": top["horse_name"], "finish": fin,
+                "hit_win": hw, "hit_place": hp, "hit_show": hs,
+            })
 
-    # Consensus pick
-    result = consensus_mod.aggregate(entries, picks)
-    if result["best_pick"]:
-        bp = result["best_pick"]
-        fin = _resolve_finish(bp, by_prog, by_name)
-        hw, hp, hs = _hit_flags(fin)
-        db.save_accuracy_snapshot(race_id, "consensus", bp["horse_name"], fin, hw, hp, hs)
-        snapshots.append({
-            "source": "consensus", "top_pick": bp["horse_name"], "finish": fin,
-            "hit_win": hw, "hit_place": hp, "hit_show": hs,
-        })
+        # Consensus pick
+        result = consensus_mod.aggregate(entries, picks)
+        if result["best_pick"]:
+            bp = result["best_pick"]
+            fin = _resolve_finish(bp, by_prog, by_name)
+            hw, hp, hs = _hit_flags(fin)
+            snapshot_rows.append((race_id, "consensus", bp["horse_name"], fin, hw, hp, hs))
+            snapshots.append({
+                "source": "consensus", "top_pick": bp["horse_name"], "finish": fin,
+                "hit_win": hw, "hit_place": hp, "hit_show": hs,
+            })
+
+        if snapshot_rows:
+            db.save_accuracy_snapshots(snapshot_rows, conn=c)
 
     return snapshots
 

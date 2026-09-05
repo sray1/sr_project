@@ -101,63 +101,66 @@ def generate(start_date, end_date, tracks, timings=None):
     })
     roi_race_count = 0  # races with winner win_payoff available (ROI-eligible)
 
-    for r in scored:
-        race_id = r["id"]
-        results = db.get_results(race_id)
-        # Winner's $2 win payoff (only stored for Equibase-filled races; BloodHorse
-        # top-3 finishers carry no mutuel payoffs).
-        winner_payoff = None
-        actual_winner = ""
-        for res in results:
-            if res.get("finish_position") == 1:
-                winner_payoff = res.get("win_payoff")
-                actual_winner = res.get("horse_name") or ""
-                break
-
-        snaps = {s["source"]: s for s in db.get_accuracy_snapshots(race_id)}
-        # Accumulate every source's hit counts + ROI.
-        for src, snap in snaps.items():
-            a = per_source[src]
-            a["races"] += 1
-            a["wins"] += snap.get("hit_win") or 0
-            a["places"] += snap.get("hit_place") or 0
-            a["shows"] += snap.get("hit_show") or 0
-            # ROI on a $2 win bet on this source's top pick:
-            #   won  -> payoff - 2 (profit)
-            #   lost -> -2 (lost the stake)
-            # Only computable when the winner's win_payoff is stored.
-            if winner_payoff is not None and snap.get("hit_win") is not None:
-                a["wagered"] += BET_UNIT
-                a["pl"] += (winner_payoff - BET_UNIT) if snap.get("hit_win") else -BET_UNIT
-
-        if winner_payoff is not None:
-            roi_race_count += 1
-
-        # Per-race row is built around the primary predictor (MLO baseline).
-        mlo = snaps.get(PRIMARY_SOURCE)
-        if not mlo:
-            continue
-        # Predicted horse's MLO: look up the rank-1 mlo_baseline pick, then its entry.
-        picks = db.get_picks(race_id, PRIMARY_SOURCE)
-        top = min((p for p in picks if p.get("rank")), key=lambda p: p["rank"], default=None)
-        mlo_val = None
-        if top:
-            for e in db.get_entries(race_id):
-                if (e.get("program_number") and e.get("program_number") == top.get("program_number")) \
-                        or (e.get("horse_name") and e.get("horse_name") == top.get("horse_name")):
-                    mlo_val = e.get("morning_line_odds")
+    # One shared connection through the per-race loop (4 queries per race x a
+    # fresh connection each was the report's own N+1 tax).
+    with db.connect() as conn:
+        for r in scored:
+            race_id = r["id"]
+            results = db.get_results(race_id, conn=conn)
+            # Winner's $2 win payoff (only stored for Equibase-filled races; BloodHorse
+            # top-3 finishers carry no mutuel payoffs).
+            winner_payoff = None
+            actual_winner = ""
+            for res in results:
+                if res.get("finish_position") == 1:
+                    winner_payoff = res.get("win_payoff")
+                    actual_winner = res.get("horse_name") or ""
                     break
-        per_race.append({
-            "track": r["track_code"], "race_number": r["race_number"],
-            "date": r["race_date"],
-            "predicted": mlo.get("top_pick_horse") or "",
-            "mlo": mlo_val,
-            "actual_winner": actual_winner,
-            "winner_payoff": winner_payoff,
-            "finish": mlo.get("finish_position"),
-            "hit_win": mlo.get("hit_win"), "hit_place": mlo.get("hit_place"),
-            "hit_show": mlo.get("hit_show"),
-        })
+
+            snaps = {s["source"]: s for s in db.get_accuracy_snapshots(race_id, conn=conn)}
+            # Accumulate every source's hit counts + ROI.
+            for src, snap in snaps.items():
+                a = per_source[src]
+                a["races"] += 1
+                a["wins"] += snap.get("hit_win") or 0
+                a["places"] += snap.get("hit_place") or 0
+                a["shows"] += snap.get("hit_show") or 0
+                # ROI on a $2 win bet on this source's top pick:
+                #   won  -> payoff - 2 (profit)
+                #   lost -> -2 (lost the stake)
+                # Only computable when the winner's win_payoff is stored.
+                if winner_payoff is not None and snap.get("hit_win") is not None:
+                    a["wagered"] += BET_UNIT
+                    a["pl"] += (winner_payoff - BET_UNIT) if snap.get("hit_win") else -BET_UNIT
+
+            if winner_payoff is not None:
+                roi_race_count += 1
+
+            # Per-race row is built around the primary predictor (MLO baseline).
+            mlo = snaps.get(PRIMARY_SOURCE)
+            if not mlo:
+                continue
+            # Predicted horse's MLO: look up the rank-1 mlo_baseline pick, then its entry.
+            picks = db.get_picks(race_id, PRIMARY_SOURCE, conn=conn)
+            top = min((p for p in picks if p.get("rank")), key=lambda p: p["rank"], default=None)
+            mlo_val = None
+            if top:
+                for e in db.get_entries(race_id, conn=conn):
+                    if (e.get("program_number") and e.get("program_number") == top.get("program_number")) \
+                            or (e.get("horse_name") and e.get("horse_name") == top.get("horse_name")):
+                        mlo_val = e.get("morning_line_odds")
+                        break
+            per_race.append({
+                "track": r["track_code"], "race_number": r["race_number"],
+                "date": r["race_date"],
+                "predicted": mlo.get("top_pick_horse") or "",
+                "mlo": mlo_val,
+                "actual_winner": actual_winner,
+                "winner_payoff": winner_payoff,
+                "finish": mlo.get("finish_position"),
+                "hit_win": mlo.get("hit_win"), "hit_place": mlo.get("hit_place"),
+                "hit_show": mlo.get("hit_show"),
+            })
     per_race.sort(key=lambda x: (x["date"], x["track"], x["race_number"]))
 
     # Aggregates
@@ -186,9 +189,14 @@ def generate(start_date, end_date, tracks, timings=None):
                    source_rows, roi_race_count, timings)
 
 
-def generate_and_save(start_date, end_date, tracks, html_path=None, timings=None):
-    """Generate the report, save to DB + file. Returns (html, path)."""
-    html = generate(start_date, end_date, tracks, timings=timings)
+def generate_and_save(start_date, end_date, tracks, html_path=None, timings=None, html=None):
+    """Generate the report, save to DB + file. Returns (html, path).
+
+    Pass `html=` to save a pre-rendered report (e.g. one whose timings block
+    was patched after render) instead of generating it here.
+    """
+    if html is None:
+        html = generate(start_date, end_date, tracks, timings=timings)
     db.save_report(REPORT_KEY, html, period_start=start_date, period_end=end_date)
     if html_path is None:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
@@ -249,6 +257,12 @@ def _roi(x):
 
 def _esc(s):
     return _html.escape(str(s)) if s is not None else ""
+
+
+def timings_block_html(timings):
+    """Public wrapper for _timings_block (used by weekly_runner to re-render
+    just the timings section after measuring the report render)."""
+    return _timings_block(timings)
 
 
 def _timings_block(timings):

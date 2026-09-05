@@ -41,7 +41,6 @@ TRACK_ALIASES = {
     "arlington": "AP", "arlington park": "AP",
     "woodbine": "WO",  # Canadian but commonly grouped with US cards
     "remington": "RP", "remington park": "RP",
-    "santa anita": "SA",
     "horseshoe indianapolis": "IND", "indiana grand": "IND",
     "mahoning valley": "MVG", "finger lakes": "FL", "finger lakes gaming": "FL",
     " mountaineer": "MNR", "mountaineer": "MNR",
