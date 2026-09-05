@@ -25,6 +25,12 @@ def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL + synchronous=NORMAL: commits no longer fsync the main DB file on
+    # every write, which removes the per-row commit cost from fetch/save loops
+    # (this pipeline commits once per saved row). Safe against app crashes;
+    # only a power loss can lose the last committed transactions.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
@@ -100,6 +106,13 @@ def init_db():
             FOREIGN KEY (symbol_id) REFERENCES symbols(id),
             UNIQUE(target_price_id, checkpoint_days)
         )
+    """)
+
+    # The report's per-symbol queries filter accuracy_snapshots by symbol_id;
+    # the table's own UNIQUE index covers target_price_id only.
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_accuracy_snapshots_symbol
+        ON accuracy_snapshots(symbol_id)
     """)
 
     # ── target_ever_hit migration ──────────────────────────────────────────
@@ -320,35 +333,77 @@ def save_actual_price(symbol_id, price_date, open_price=None, close_price=None,
     cursor = conn.cursor()
     now = datetime.now(timezone.utc).isoformat()
 
+    # Single-statement upsert (no SELECT round trip). COALESCE keeps any
+    # existing non-null value when the caller passes None for a field.
     cursor.execute(
-        "SELECT id FROM actual_prices WHERE symbol_id = ? AND price_date = ?",
-        (symbol_id, price_date)
+        """
+        INSERT INTO actual_prices
+            (symbol_id, price_date, open_price, close_price, high_price,
+             low_price, volume, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol_id, price_date) DO UPDATE SET
+            open_price = COALESCE(excluded.open_price, actual_prices.open_price),
+            close_price = COALESCE(excluded.close_price, actual_prices.close_price),
+            high_price = COALESCE(excluded.high_price, actual_prices.high_price),
+            low_price = COALESCE(excluded.low_price, actual_prices.low_price),
+            volume = COALESCE(excluded.volume, actual_prices.volume),
+            fetched_at = excluded.fetched_at
+        RETURNING id
+        """,
+        (symbol_id, price_date, open_price, close_price, high_price, low_price,
+         volume, now)
     )
-    row = cursor.fetchone()
-
-    if row:
-        cursor.execute(
-            "UPDATE actual_prices SET open_price = COALESCE(?, open_price), "
-            "close_price = COALESCE(?, close_price), high_price = COALESCE(?, high_price), "
-            "low_price = COALESCE(?, low_price), volume = COALESCE(?, volume), "
-            "fetched_at = ? WHERE id = ?",
-            (open_price, close_price, high_price, low_price, volume, now, row["id"])
-        )
-        conn.commit()
-        result = row["id"]
-    else:
-        cursor.execute(
-            "INSERT INTO actual_prices "
-            "(symbol_id, price_date, open_price, close_price, high_price, low_price, "
-            "volume, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (symbol_id, price_date, open_price, close_price, high_price, low_price,
-             volume, now)
-        )
-        conn.commit()
-        result = cursor.lastrowid
-
+    result = cursor.fetchone()["id"]
+    conn.commit()
     conn.close()
     return result
+
+
+def save_price_history_rows(symbol_id, rows):
+    """Batch-upsert daily price history rows into actual_prices.
+
+    Upserts on (symbol_id, price_date) — existing rows are refreshed, new
+    dates are appended. One connection and one commit for the whole batch,
+    so persisting a symbol's full history costs a single transaction.
+
+    Args:
+        symbol_id: The symbol's DB id.
+        rows: History rows from price_fetcher ({price_date, open, high, low,
+              close, volume} dicts). Rows missing open/volume upsert those
+              fields as NULL only if they aren't already set (COALESCE).
+
+    Returns:
+        Number of rows written.
+    """
+    if not rows:
+        return 0
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now(timezone.utc).isoformat()
+
+    cursor.executemany(
+        """
+        INSERT INTO actual_prices
+            (symbol_id, price_date, open_price, close_price, high_price,
+             low_price, volume, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol_id, price_date) DO UPDATE SET
+            open_price = COALESCE(excluded.open_price, actual_prices.open_price),
+            close_price = COALESCE(excluded.close_price, actual_prices.close_price),
+            high_price = COALESCE(excluded.high_price, actual_prices.high_price),
+            low_price = COALESCE(excluded.low_price, actual_prices.low_price),
+            volume = COALESCE(excluded.volume, actual_prices.volume),
+            fetched_at = excluded.fetched_at
+        """,
+        [
+            (symbol_id, r['price_date'], r.get('open'), r.get('close'),
+             r.get('high'), r.get('low'), r.get('volume'), now)
+            for r in rows
+        ]
+    )
+    conn.commit()
+    conn.close()
+    return len(rows)
 
 
 def get_actual_prices(symbol_id, start_date=None, end_date=None):
@@ -424,35 +479,30 @@ def save_accuracy_snapshot(target_price_id, symbol_id, checkpoint_days,
         else:
             accuracy_rating = "miss_high"
 
+    # Single-statement upsert on (target_price_id, checkpoint_days) — no
+    # SELECT round trip.
     cursor.execute(
-        "SELECT id FROM accuracy_snapshots "
-        "WHERE target_price_id = ? AND checkpoint_days = ?",
-        (target_price_id, checkpoint_days)
+        """
+        INSERT INTO accuracy_snapshots
+            (target_price_id, symbol_id, checkpoint_days, actual_price,
+             target_price, price_diff, pct_diff, accuracy_rating,
+             snapshot_date, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(target_price_id, checkpoint_days) DO UPDATE SET
+            actual_price = excluded.actual_price,
+            target_price = excluded.target_price,
+            price_diff = excluded.price_diff,
+            pct_diff = excluded.pct_diff,
+            accuracy_rating = excluded.accuracy_rating,
+            snapshot_date = excluded.snapshot_date,
+            created_at = excluded.created_at
+        RETURNING id
+        """,
+        (target_price_id, symbol_id, checkpoint_days, actual_price, target_price,
+         price_diff, pct_diff, accuracy_rating, today, now)
     )
-    row = cursor.fetchone()
-
-    if row:
-        cursor.execute(
-            "UPDATE accuracy_snapshots SET actual_price = ?, target_price = ?, "
-            "price_diff = ?, pct_diff = ?, accuracy_rating = ?, snapshot_date = ?, "
-            "created_at = ? WHERE id = ?",
-            (actual_price, target_price, price_diff, pct_diff, accuracy_rating,
-             today, now, row["id"])
-        )
-        conn.commit()
-        result = row["id"]
-    else:
-        cursor.execute(
-            "INSERT INTO accuracy_snapshots "
-            "(target_price_id, symbol_id, checkpoint_days, actual_price, target_price, "
-            "price_diff, pct_diff, accuracy_rating, snapshot_date, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (target_price_id, symbol_id, checkpoint_days, actual_price, target_price,
-             price_diff, pct_diff, accuracy_rating, today, now)
-        )
-        conn.commit()
-        result = cursor.lastrowid
-
+    result = cursor.fetchone()["id"]
+    conn.commit()
     conn.close()
     return result
 

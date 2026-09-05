@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from db import (
     get_symbols_needing_accuracy_check, save_accuracy_snapshot,
     get_actual_prices, get_closest_price, save_actual_price,
-    get_symbol_id,
+    save_price_history_rows, get_symbol_id,
     get_targets_needing_ever_hit, save_ever_hit,
 )
 import price_fetcher
@@ -35,6 +35,11 @@ def run_accuracy_checks(checkpoint_days=None, symbol=None):
     but don't have a snapshot yet, then fetches actual prices and computes
     accuracy metrics.
 
+    One batched price-history fetch serves BOTH passes (checkpoint
+    comparisons and the ever-hit evaluation), and the fetched history is
+    persisted into actual_prices so later runs find dense cached prices
+    instead of re-fetching.
+
     Args:
         checkpoint_days: Specific checkpoint to check (30, 90, or 365).
                          If None, checks all due checkpoints.
@@ -50,18 +55,45 @@ def run_accuracy_checks(checkpoint_days=None, symbol=None):
         symbol_upper = symbol.upper()
         targets = [t for t in targets if t['symbol'] == symbol_upper]
 
-    if not targets:
-        print("\n  No targets due for accuracy checks.")
-        return {"checked": 0, "hits": 0, "miss_low": 0, "miss_high": 0, "no_data": 0, "errors": 0}
+    # Ever-hit targets due this run (fetched here so their start dates join
+    # the same batched history download as the checkpoint targets).
+    ever_due = get_targets_needing_ever_hit(symbol=symbol)
 
-    print(f"\n  Found {len(targets)} target/checkpoint pairs due for accuracy check")
+    if not targets and not ever_due:
+        print("\n  No targets due for accuracy checks.")
+        return {"checked": 0, "hits": 0, "miss_low": 0, "miss_high": 0,
+                "no_data": 0, "errors": 0,
+                "ever_hit_total": 0, "ever_hit_hit": 0}
+
+    if targets:
+        print(f"\n  Found {len(targets)} target/checkpoint pairs due for accuracy check")
+
+    # One history per symbol: the earliest date any due target needs, fetched
+    # in a single batched download shared by both passes.
+    starts = {}
+    for t in targets:
+        s = starts.setdefault(t['symbol'], t['checkpoint_date'])
+        starts[t['symbol']] = min(s, t['checkpoint_date'])
+    for t in ever_due:
+        s = starts.setdefault(t['symbol'], t['date_posted'])
+        starts[t['symbol']] = min(s, t['date_posted'])
+    histories = price_fetcher.fetch_price_histories(starts)
+
+    # Persist the fetched histories so actual_prices becomes a dense daily
+    # cache (checkpoint lookups then hit the DB instead of the network,
+    # and the report can fall back to DB rows if a download fails).
+    for sym, hist in histories.items():
+        sid = get_symbol_id(sym)
+        if sid:
+            save_price_history_rows(sid, hist)
 
     stats = {"checked": 0, "hits": 0, "miss_low": 0, "miss_high": 0, "no_data": 0, "errors": 0,
              "ever_hit_total": 0, "ever_hit_hit": 0}
 
     for target in targets:
         try:
-            result = compute_accuracy_for_target(target)
+            result = compute_accuracy_for_target(
+                target, history=histories.get(target['symbol']))
             stats["checked"] += 1
 
             if result["accuracy_rating"] == "hit":
@@ -79,9 +111,8 @@ def run_accuracy_checks(checkpoint_days=None, symbol=None):
 
     # Whole-window ever-hit (TPMetANY) pass: did the price touch each target at
     # any point during its 365-day window? Complements the point-in-time
-    # checkpoints above. Runs after the checkpoint loop so a fresh price fetch
-    # for a checkpoint doesn't double-count as the ever-hit history fetch.
-    ever_stats = update_ever_hit_flags(symbol=symbol)
+    # checkpoints above. Reuses the batched histories fetched above.
+    ever_stats = update_ever_hit_flags(symbol=symbol, histories=histories)
     stats["ever_hit_total"] = ever_stats["evaluated"]
     stats["ever_hit_hit"] = ever_stats["hit"]
 
@@ -99,13 +130,18 @@ def run_accuracy_checks(checkpoint_days=None, symbol=None):
     return stats
 
 
-def compute_accuracy_for_target(target_info):
+def compute_accuracy_for_target(target_info, history=None):
     """Compute accuracy for a single target at a single checkpoint.
 
     Args:
         target_info: Dict from get_symbols_needing_accuracy_check(), containing
                      target_price_id, symbol_id, target_price, checkpoint_date,
                      checkpoint_days, symbol.
+        history: Optional list of this symbol's daily price rows (ascending,
+                 {price_date, low, high, close, ...}), typically the shared
+                 batched history fetched by run_accuracy_checks. Consulted
+                 when the DB has no price near the checkpoint, before any
+                 per-date network fetch.
 
     Returns:
         Dict with accuracy results: {accuracy_rating, actual_price, price_diff, pct_diff}
@@ -131,6 +167,21 @@ def compute_accuracy_for_target(target_info):
                 price_data = None
         except (ValueError, TypeError):
             price_data = None
+
+    if not price_data and history:
+        # Same nearest-prior-trading-day logic as fetch_price_on_date, served
+        # from the shared in-memory history (no network call).
+        for p in reversed(history):
+            if p.get('price_date') and p['price_date'] <= checkpoint_date:
+                try:
+                    cp_dt = datetime.strptime(checkpoint_date, '%Y-%m-%d')
+                    pd_dt = datetime.strptime(p['price_date'], '%Y-%m-%d')
+                    if abs((cp_dt - pd_dt).days) <= 10:
+                        price_data = {'price_date': p['price_date'],
+                                      'close': p.get('close')}
+                except (ValueError, TypeError):
+                    pass
+                break
 
     if not price_data:
         # Fetch from yfinance and save to database
@@ -269,16 +320,19 @@ def compute_ever_hit(history, date_posted, target_price,
     }
 
 
-def update_ever_hit_flags(symbol=None):
+def update_ever_hit_flags(symbol=None, histories=None):
     """Evaluate and persist the ever-hit flag for all due dated targets.
 
-    Fetches one daily price history per symbol (over [earliest date_posted,
-    today]) and evaluates every eligible target of that symbol against it, so
-    multiple targets on the same symbol share a single network call. Hits are
-    sticky; a 0 is re-evaluated while its window is still open.
+    Uses one daily price history per symbol (over [earliest date_posted,
+    today]) and evaluates every eligible target of that symbol against it.
+    Hits are sticky; a 0 is re-evaluated while its window is still open.
 
     Args:
         symbol: limit to one symbol (uppercase). None = all symbols.
+        histories: Optional pre-fetched {symbol: [history rows]} (e.g. the
+                   batch shared with the checkpoint pass in
+                   run_accuracy_checks). When None, one batched download
+                   is made for all due symbols.
 
     Returns:
         Dict {evaluated: int, hit: int, errors: int}.
@@ -292,14 +346,18 @@ def update_ever_hit_flags(symbol=None):
     for t in due:
         by_symbol.setdefault(t["symbol"], []).append(t)
 
-    today = datetime.now().strftime('%Y-%m-%d')
+    if histories is None:
+        histories = price_fetcher.fetch_price_histories(
+            {sym: min(t["date_posted"] for t in targets)
+             for sym, targets in by_symbol.items()}
+        )
+
     evaluated = 0
     hit_count = 0
     errors = 0
 
     for sym, targets in by_symbol.items():
-        start = min(t["date_posted"] for t in targets)
-        history = price_fetcher.fetch_price_history(sym, start, today)
+        history = histories.get(sym) or []
         if not history:
             # No price data at all — leave these for a later run rather than
             # stamping a false 0 (which would be sticky once the window closes).

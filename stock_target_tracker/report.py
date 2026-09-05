@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db import (
     init_db, get_symbols, get_target_prices, get_actual_prices,
-    get_accuracy_snapshots, get_connection,
+    get_accuracy_snapshots, get_connection, save_price_history_rows,
 )
 import price_fetcher
 from accuracy import HIT_TOLERANCE_PCT
@@ -54,7 +54,9 @@ def _price_range_for(history, start_date, horizon_days=360):
         history: list of dicts {price_date, low, high, close} sorted ascending
             (a symbol's fetched daily history).
         start_date: 'YYYY-MM-DD' the analyst target was made (date_posted).
-        horizon_days: how many days forward to include (default 360).
+        horizon_days: how many days forward to include (default 360 —
+                      ~one year of trading days; intentionally a touch
+                      shorter than the 365-day whole-window/ever-hit window).
 
     Returns:
         dict {low, high, start, end, n_points} where low/high are the min low and
@@ -299,9 +301,57 @@ def _fetch_report_data():
     symbols = [s for s in symbols if not _is_cash_fund(s)]
 
     # Cache of per-symbol price history (symbol -> sorted list of daily price
-    # dicts), fetched once per symbol so the 360-day price range can be computed
-    # for each analyst target without repeated network calls.
+    # dicts). One BATCHED download serves every symbol's 360-day price ranges,
+    # whole-window stats, and chart data (instead of one request per symbol).
+    # The fetched rows are persisted into actual_prices so the DB accumulates
+    # a dense daily price history; symbols whose download fails fall back to
+    # whatever rows the DB already has.
+    min_date_rows = cursor.execute(
+        "SELECT symbol_id, MIN(date_posted) as md FROM target_prices "
+        "WHERE date_posted IS NOT NULL GROUP BY symbol_id"
+    ).fetchall()
+    min_dates = {r["symbol_id"]: r["md"] for r in min_date_rows if r["md"]}
+    hist_requests = {s["symbol"]: min_dates[s["id"]] for s in symbols
+                     if s["id"] in min_dates}
     history_cache = {}
+    if hist_requests:
+        print(f"  Fetching price histories for {len(hist_requests)} symbols "
+              f"(batch, from {min(hist_requests.values())})...")
+        history_cache = price_fetcher.fetch_price_histories(hist_requests)
+        for s in symbols:
+            hist = history_cache.get(s["symbol"])
+            if hist:
+                save_price_history_rows(s["id"], hist)
+
+    def _db_history_fallback(sym):
+        """History rows from actual_prices, in fetch_price_history's format."""
+        start = min_dates.get(sym["id"])
+        if not start:
+            return []
+        return [
+            {"price_date": r["price_date"], "open": r["open_price"],
+             "high": r["high_price"], "low": r["low_price"],
+             "close": r["close_price"], "volume": r["volume"]}
+            for r in get_actual_prices(sym["id"], start, None)
+        ]
+
+    for s in symbols:
+        if s["symbol"] in min_dates and s["symbol"] not in history_cache:
+            fallback = _db_history_fallback(s)
+            if fallback:
+                history_cache[s["symbol"]] = fallback
+
+    # Memoized whole-window stats: the per-symbol loop and the per-org loop
+    # evaluate overlapping target sets against the same cached history, so each
+    # (symbol, date_posted, target_price) is computed exactly once.
+    ww_stats_cache = {}
+
+    def _ww_stats(symbol, t):
+        key = (symbol, t["date_posted"], t["target_price"])
+        if key not in ww_stats_cache:
+            ww_stats_cache[key] = _whole_window_stats(
+                history_cache.get(symbol, []), t["date_posted"], t["target_price"])
+        return ww_stats_cache[key]
 
     # ── Per-symbol: latest targets ──
     for sym in symbols:
@@ -402,26 +452,9 @@ def _fetch_report_data():
             sym["best_analysts_consensus"], sym["worst_analysts_consensus"] = \
             _split_best_worst(sym["best_analysts"], sym["worst_analysts"])
 
-        # Fetch this symbol's price history once (from its earliest target date
-        # to today) so each displayed analyst target can show the stock's price
-        # range over the 360 days after the prediction. Skipped for symbols with
-        # no targets; failures yield an empty history (ranges show as "if
-        # possible" / unavailable).
-        min_date_row = cursor.execute(
-            "SELECT MIN(date_posted) as md FROM target_prices "
-            "WHERE symbol_id = ? AND date_posted IS NOT NULL",
-            (sym["id"],)
-        ).fetchone()
-        min_date = min_date_row["md"] if min_date_row else None
-        if min_date:
-            print(f"  [{sym['symbol']}] Fetching price history from {min_date}...")
-            history_cache[sym["symbol"]] = price_fetcher.fetch_price_history(
-                sym["symbol"], min_date, datetime.now().strftime('%Y-%m-%d')
-            )
-        else:
-            history_cache[sym["symbol"]] = []
-
         # Attach the 360-day price range to each displayed analyst target.
+        # (The history itself was fetched in one batch above; symbols with no
+        # targets have no history and ranges show as "if possible"/unavailable.)
         hist = history_cache.get(sym["symbol"], [])
         for a in sym["best_analysts"] + sym["worst_analysts"]:
             a["price_range"] = _price_range_for(hist, a.get("date_posted"))
@@ -448,7 +481,7 @@ def _fetch_report_data():
         ww_band = []
         ww_bias = []
         for t in sym["chart_targets"]:
-            stats = _whole_window_stats(hist, t["date_posted"], t["target_price"])
+            stats = _ww_stats(sym["symbol"], t)
             if not stats:
                 continue
             ww_n += 1
@@ -613,10 +646,10 @@ def _fetch_report_data():
     # checkpoints) ──
     # For each analyst org, evaluate every target against the stock's whole
     # price path (Met_any, time-to-hit, time-within-band, bias) using the
-    # per-symbol history cached above. These complement the 30/90/180/365
+    # batched history cached above. These complement the 30/90/180/365
     # checkpoints: a target that missed at day 365 may still have been touched
-    # mid-window. history_cache is fully populated by the per-symbol loop, so
-    # no extra network calls are made here.
+    # mid-window. history_cache was fetched in one batch before the per-symbol
+    # loop, so no extra network calls are made here.
     cursor.execute("""
         SELECT COALESCE(tp.analyst_firm, '') as analyst_firm,
                s.symbol, tp.date_posted, tp.target_price
@@ -641,8 +674,7 @@ def _fetch_report_data():
         bias_vals = []
         n_with_data = 0
         for t in targets:
-            hist = history_cache.get(t["symbol"], [])
-            stats = _whole_window_stats(hist, t["date_posted"], t["target_price"])
+            stats = _ww_stats(t["symbol"], t)
             if not stats:
                 continue
             n_with_data += 1

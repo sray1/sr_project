@@ -20,7 +20,6 @@ Usage:
 import argparse
 import os
 import sys
-import time
 
 # Add this module's directory to the path so sibling modules can be imported
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -193,9 +192,7 @@ def do_fetch(args):
 
     for i, symbol in enumerate(symbol_list, 1):
         # Symbols are already synced into the DB by _resolve_symbols
-        symbol_id = get_symbol_id(symbol)
-        if not symbol_id:
-            symbol_id = save_symbol(symbol)
+        symbol_id = get_symbol_id(symbol) or save_symbol(symbol)
 
         print(f"  [{i}/{len(symbol_list)}] {symbol}:")
 
@@ -227,12 +224,10 @@ def do_fetch(args):
             print(f"    ERROR fetching {symbol}: {e}")
             total_errors += 1
 
-        # Small delay between symbols
-        if i < len(symbol_list):
-            time.sleep(0.5)
-
     print(f"\n  Fetch complete: {total_targets} targets across {len(symbol_list)} symbols "
           f"({total_errors} errors)")
+    # NOTE: no inter-symbol sleep here — each source module enforces its own
+    # rate limit (utils.rate_limit), which is the single throttle point.
 
 
 def do_prices(args):
@@ -266,14 +261,16 @@ def do_prices(args):
             else:
                 print(f"    {symbol}: no data for {args.date}")
     else:
-        # Current price fetch
+        # Current price fetch — one batched download for all symbols
+        price_map = price_fetcher.fetch_current_prices_batch(symbol_list)
+
         for symbol in symbol_list:
             symbol_id = get_symbol_id(symbol)
             if not symbol_id:
                 print(f"    {symbol}: not in database, skipping")
                 continue
 
-            price_data = price_fetcher.fetch_current_price(symbol)
+            price_data = price_map.get(symbol)
             if price_data:
                 save_actual_price(
                     symbol_id=symbol_id,

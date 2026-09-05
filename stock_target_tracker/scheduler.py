@@ -74,7 +74,7 @@ def scheduled_fetch():
         if not symbol_id:
             continue
 
-        # Fetch analyst targets
+        # Fetch analyst targets (each source module enforces its own rate limit)
         try:
             targets = fetch_all_targets(symbol)
             for target in targets:
@@ -90,14 +90,19 @@ def scheduled_fetch():
                         raw_data=target.get('raw_data'),
                     )
                     total_targets += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"    [{symbol}] Error saving target: {e}")
         except Exception as e:
             print(f"    [{symbol}] Target fetch failed: {e}")
 
-        # Fetch current price
-        try:
-            price_data = price_fetcher.fetch_current_price(symbol)
+    # Fetch current prices — one batched download for all symbols
+    try:
+        price_map = price_fetcher.fetch_current_prices_batch(symbols)
+        for symbol in symbols:
+            symbol_id = get_symbol_id(symbol)
+            if not symbol_id:
+                continue
+            price_data = price_map.get(symbol)
             if price_data:
                 save_actual_price(
                     symbol_id=symbol_id,
@@ -109,11 +114,8 @@ def scheduled_fetch():
                     volume=price_data['volume'],
                 )
                 total_prices += 1
-        except Exception as e:
-            print(f"    [{symbol}] Price fetch failed: {e}")
-
-        # Rate limiting between symbols
-        time.sleep(1)
+    except Exception as e:
+        print(f"    Batch price fetch failed: {e}")
 
     print(f"\n  Scheduled fetch complete: {total_targets} targets, {total_prices} prices")
 

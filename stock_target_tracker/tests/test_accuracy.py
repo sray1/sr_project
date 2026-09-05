@@ -104,6 +104,9 @@ class TestCheckpointPriceProximity:
             return {"price_date": "2024-06-28", "open": 1.0, "close": 110.0,
                     "high": 1.0, "low": 1.0, "volume": 1}
 
+        # No shared batched history (forces the per-date network fallback).
+        monkeypatch.setattr(price_fetcher, "fetch_price_histories",
+                            lambda reqs: {})
         monkeypatch.setattr(price_fetcher, "fetch_price_on_date", fake_fetch)
         accuracy.run_accuracy_checks(checkpoint_days=180)
 
@@ -122,6 +125,8 @@ class TestCheckpointPriceProximity:
         # cached price 3 days before the 180-day checkpoint (2024-06-29) -> within tolerance
         db.save_actual_price(sid, price_date="2024-06-26", close_price=107.0)
         calls = []
+        monkeypatch.setattr(price_fetcher, "fetch_price_histories",
+                            lambda reqs: {})
         monkeypatch.setattr(price_fetcher, "fetch_price_on_date",
                             lambda *a, **k: calls.append(1) or None)
         accuracy.run_accuracy_checks(checkpoint_days=180)
@@ -130,6 +135,28 @@ class TestCheckpointPriceProximity:
         assert s["checkpoint_days"] == 180
         assert s["actual_price"] == 107.0  # used the cached price
         assert calls == [], "should not fetch when a close cached price exists"
+
+    def test_shared_history_serves_checkpoint_without_network(self, monkeypatch):
+        # With a shared history covering the checkpoint date, the checkpoint
+        # price comes from it — no per-date network fetch at all. Called
+        # directly (run_accuracy_checks persists the history first, so there
+        # the DB-first path serves it instead).
+        sid = db.save_symbol("HISTSY")
+        tid = db.save_target_price(sid, "test", 100.0, analyst_firm="TestCo",
+                                   date_posted="2024-01-01")
+        hist = [{"price_date": "2024-06-28", "open": 1.0, "high": 1.0,
+                 "low": 1.0, "close": 90.0, "volume": 1}]
+        net_calls = []
+        monkeypatch.setattr(price_fetcher, "fetch_price_on_date",
+                            lambda *a, **k: net_calls.append(1) or None)
+        target = {"target_price_id": tid, "symbol_id": sid, "target_price": 100.0,
+                  "checkpoint_date": "2024-06-29", "checkpoint_days": 180,
+                  "symbol": "HISTSY", "analyst_firm": "TestCo"}
+        result = accuracy.compute_accuracy_for_target(target, history=hist)
+
+        assert result["actual_price"] == 90.0
+        assert result["accuracy_rating"] == "miss_high"
+        assert net_calls == [], "history should serve the checkpoint price"
 
 
 class TestEverHit:
@@ -184,8 +211,8 @@ class TestEverHit:
         tid = db.save_target_price(sid, "test", 100.0, analyst_firm="TestCo",
                                    date_posted="2026-01-01")
         hist = [{"price_date": "2026-01-10", "low": 95, "high": 105, "close": 100}]
-        monkeypatch.setattr(price_fetcher, "fetch_price_history",
-                            lambda *a, **k: hist)
+        monkeypatch.setattr(price_fetcher, "fetch_price_histories",
+                            lambda reqs: {"HITSTOCK": hist})
 
         stats = accuracy.update_ever_hit_flags()
         assert stats["evaluated"] == 1
@@ -200,18 +227,20 @@ class TestEverHit:
         tid = db.save_target_price(sid, "test", 100.0, analyst_firm="TestCo",
                                    date_posted="2026-01-01")  # window open until 2027-01-01
         # First pass: no touch -> ever_hit = 0.
-        monkeypatch.setattr(price_fetcher, "fetch_price_history",
-                            lambda *a, **k: [{"price_date": "2026-01-10",
-                                              "low": 120, "high": 130, "close": 125}])
+        monkeypatch.setattr(price_fetcher, "fetch_price_histories",
+                            lambda reqs: {"MISSSTOCK": [
+                                {"price_date": "2026-01-10",
+                                 "low": 120, "high": 130, "close": 125}]})
         accuracy.update_ever_hit_flags()
         due = db.get_targets_needing_ever_hit()
         assert any(t["target_price_id"] == tid for t in due), \
             "a 0 with an open window must stay eligible for re-evaluation"
 
         # Second pass: price now touches -> flips to 1.
-        monkeypatch.setattr(price_fetcher, "fetch_price_history",
-                            lambda *a, **k: [{"price_date": "2026-02-10",
-                                              "low": 95, "high": 105, "close": 100}])
+        monkeypatch.setattr(price_fetcher, "fetch_price_histories",
+                            lambda reqs: {"MISSSTOCK": [
+                                {"price_date": "2026-02-10",
+                                 "low": 95, "high": 105, "close": 100}]})
         stats = accuracy.update_ever_hit_flags()
         assert stats["hit"] == 1
         # Now sticky — no longer eligible.
@@ -222,8 +251,8 @@ class TestEverHit:
         sid = db.save_symbol("NODATA")
         tid = db.save_target_price(sid, "test", 100.0, analyst_firm="TestCo",
                                    date_posted="2026-01-01")
-        monkeypatch.setattr(price_fetcher, "fetch_price_history",
-                            lambda *a, **k: [])
+        monkeypatch.setattr(price_fetcher, "fetch_price_histories",
+                            lambda reqs: {})
         stats = accuracy.update_ever_hit_flags()
         assert stats["evaluated"] == 0
         assert stats["errors"] == 1
