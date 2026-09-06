@@ -116,6 +116,33 @@ def test_no_picks_resolved():
     assert len(r["rows"]) == 4
 
 
+def test_deep_rank_scores_zero_not_first_place():
+    """An explicit 4th choice is NOT an unranked mention: zero points, no #1
+    vote. (Regression: rank>=4 used to be promoted to a first-place vote.)"""
+    entries = _entries()
+    picks = [
+        # Source A ranks 4 deep: 1 > 2 > 3 > 4
+        {"source": "A", "horse_name": "Speed Star", "program_number": "1", "rank": 1},
+        {"source": "A", "horse_name": "Lazy Day", "program_number": "2", "rank": 2},
+        {"source": "A", "horse_name": "Midnight Run", "program_number": "3", "rank": 3},
+        {"source": "A", "horse_name": "Long Shot Lou", "program_number": "4", "rank": 4},
+    ]
+    r = consensus.aggregate(entries, picks)
+    by_prog = {row["program_number"]: row for row in r["rows"]}
+    assert by_prog["4"]["points"] == 0
+    assert by_prog["4"]["first_votes"] == 0
+    assert r["num_sources"] == 1
+
+    # A genuinely unranked mention (rank=None) still scores as a #1 vote.
+    picks2 = [
+        {"source": "B", "horse_name": "Long Shot Lou", "program_number": "4", "rank": None},
+    ]
+    r2 = consensus.aggregate(entries, picks2)
+    by_prog2 = {row["program_number"]: row for row in r2["rows"]}
+    assert by_prog2["4"]["points"] == 5
+    assert by_prog2["4"]["first_votes"] == 1
+
+
 def test_format_table_runs():
     entries = _entries()
     picks = [

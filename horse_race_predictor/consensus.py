@@ -125,11 +125,16 @@ def aggregate(entries, picks):
 
         pts = RANK_POINTS.get(rank)
         if pts is None:
-            # Unranked mention - treat as a top-pick vote with first-place points
-            # only if no ranked picks exist from this source; to keep it simple
-            # and avoid double-counting, score unranked as a 1st-place vote.
-            pts = PTS_FIRST
-            rank = 1
+            if rank is None:
+                # Unranked mention (no rank at all) - score as a 1st-place vote.
+                pts = PTS_FIRST
+                rank = 1
+            else:
+                # Explicit rank beyond the point scheme (e.g. a 4th choice) -
+                # zero points and no vote. It must NOT be promoted to a
+                # first-place vote: a deep-ballot mention is a lukewarm
+                # endorsement, not a win selection.
+                pts = 0
         points[k] += pts
         if rank == 1:
             first_votes[k] += 1
