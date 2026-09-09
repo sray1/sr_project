@@ -11,6 +11,7 @@ Usage:
     python nfl_dfs_optimizer/analyzer.py --mode classic --stack qb2
     python nfl_dfs_optimizer/analyzer.py --contest-id 12345678
     python nfl_dfs_optimizer/analyzer.py --csv my_projections.csv --lineups 3
+    python nfl_dfs_optimizer/analyzer.py --compare              # per-source comparison
 """
 
 import argparse
@@ -99,25 +100,40 @@ def select_contest(args):
     return contest, mode
 
 
-def run_analysis(args):
-    """Main pipeline: contest -> draftables -> projections -> lineups."""
+def prepare_contest(args):
+    """Shared prologue: contest selection, details, draftables fetch.
+
+    Returns:
+        (contest, mode, draftables) or (None, None, None) on failure
+    """
     contest, mode = select_contest(args)
     if not contest:
-        return
+        return None, None, None
 
     print(f"Selected contest: {contest.name}")
     show_contest_details(contest)
     print()
 
-    # Draftables & projections
     print(f"Fetching draftables for draft group {contest.draft_group_id}...")
     draftables = fetch_draftables(contest.draft_group_id)
     print(f"Found {len(draftables)} draftable entries")
 
+    return contest, mode, draftables
+
+
+def run_analysis(args, contest=None, mode=None, draftables=None):
+    """Main pipeline: contest -> draftables -> projections -> lineups."""
+    if contest is None:
+        contest, mode, draftables = prepare_contest(args)
+        if not contest:
+            return
+
     player_projections = get_player_projections(
         draftables, csv_path=args.csv, week=args.week, allow_scrape=not args.no_scrape)
 
-    pool = build_player_pool(draftables, player_projections)
+    pool = build_player_pool(draftables, player_projections,
+                             drop_backup_qbs=not args.keep_backup_qbs,
+                             exclude=args.exclude)
     display_projection_sources(player_projections, pool)
     print(f"\nPlayer pool: {len(pool)} players "
           f"(deduped, min salary, active only)")
@@ -180,6 +196,17 @@ def parse_args():
                         help="Skip web projection scrapers (CSV + fallback only)")
     parser.add_argument('--no-dst-captain', action='store_true',
                         help="Showdown: forbid DST as captain")
+    parser.add_argument('--exclude', default=None,
+                        help="Comma-separated player names to drop from all "
+                             "lineups (backups, injuries): "
+                             "\"--exclude 'Tommy DeVito, Seahawks DST'\"")
+    parser.add_argument('--keep-backup-qbs', action='store_true',
+                        help="Do NOT auto-drop backup QBs (default: keep only "
+                             "each team's top-salaried QB)")
+    parser.add_argument('--compare', action='store_true',
+                        help="Compare optimal lineups across ALL projection "
+                             "sources (DailyFantasyFuel, BlueCollarDFS, CSV, "
+                             "fallback) instead of the single-pipeline run")
     return parser.parse_args()
 
 
@@ -189,7 +216,14 @@ def main():
         args.lineups = 1  # classic defaults to top lineup only
 
     def _run():
-        run_analysis(args)
+        contest, mode, draftables = prepare_contest(args)
+        if not contest:
+            return
+        if args.compare:
+            from comparison import run_comparison
+            run_comparison(args, contest, mode, draftables)
+        else:
+            run_analysis(args, contest, mode, draftables)
 
     prefix = 'nfl_dfs_analysis_'
     run_and_save(_run, prefix=prefix, output_dir='output')

@@ -8,7 +8,8 @@ fallback as last resort, clearly labeled).
 
 Priority order per player:
 1. Manual CSV override (highest priority) - name + projected DK points
-2. Free-site scrape (numberFire, FantasyPros) - best-effort, often bot-walled
+2. Free-site scrape (DailyFantasyFuel, BlueCollarDFS, numberFire, FantasyPros)
+   - best-effort, often bot-walled; DFF is the one verified-working source
 3. Salary-implied baseline per position (crude, labeled as 'fallback')
 """
 
@@ -262,8 +263,198 @@ def scrape_fantasypros(week=None):
     return projections
 
 
+# ---------------------------------------------------------------------------
+# Source 2b: Daily Fantasy Fuel (verified working, 2026-09)
+# ---------------------------------------------------------------------------
+
+DFF_URL = "https://www.dailyfantasyfuel.com/nfl/projections/"
+
+# Trailing injury-report tokens in player names ("Ja'Marr Chase Q")
+INJURY_TAGS = {'Q', 'D', 'O', 'IR', 'OUT', 'NA', 'P', 'SUSP'}
+DFF_SALARY_RE = re.compile(r"\$\s*([\d,]+(?:\.\d+)?)\s*k", re.IGNORECASE)
+
+
+def _strip_injury_tag(name):
+    """Strip trailing injury-report tokens: 'Ja'Marr Chase Q' -> 'Ja'Marr Chase'.
+
+    Only known tags are stripped (never name parts like 'III', which
+    normalize_name handles separately).
+    """
+    parts = name.split()
+    while parts and parts[-1].upper() in INJURY_TAGS:
+        parts.pop()
+    return ' '.join(parts)
+
+
+def _parse_dff_projections(html):
+    """Parse the Daily Fantasy Fuel projections table into projection keys.
+
+    Verified layout (2026-09): the page is server-rendered with one <table>;
+    each player <tr> holds a mobile card (first <td>, hidden on desktop)
+    followed by desktop cells. Column names come from the detailed thead row
+    (POS/NAME/SALARY/TEAM/OPP/.../'DK FP PROJECTED'), so column order changes
+    are tolerated. The current-slate page is fetched; DFF has no week param.
+
+    Returns:
+        Dict {normalized_name: pts} plus {normalized_name|team: pts} keys,
+        or {} if the layout is unrecognized.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, 'lxml')
+    table = soup.find('table')
+    if table is None:
+        return {}
+
+    # Column map from the detailed header row (the one with POS and NAME)
+    colmap = {}
+    for tr in table.find_all('tr'):
+        headers = [th.get_text(' ', strip=True).upper()
+                   for th in tr.find_all('th', recursive=False)]
+        if 'POS' in headers and 'NAME' in headers:
+            colmap = {h: i for i, h in enumerate(headers)}
+            break
+    if not colmap:
+        return {}
+
+    projections = {}
+    tbody = table.find('tbody') or table
+    for row in tbody.find_all('tr', recursive=False):
+        tds = row.find_all('td', recursive=False)
+        # Drop the mobile card: the first td when it is hidden on desktop
+        if tds and 'hidden-lg' in (tds[0].get('class') or []):
+            tds = tds[1:]
+        if len(tds) <= max(colmap.values()):
+            continue
+
+        position = tds[colmap['POS']].get_text(strip=True).upper()
+        raw_name = tds[colmap['NAME']].get_text(' ', strip=True)
+        team = tds[colmap['TEAM']].get_text(strip=True).upper()
+        proj_text = tds[colmap['DK FP PROJECTED']].get_text(strip=True)
+
+        try:
+            proj = float(proj_text)
+        except ValueError:
+            continue  # '--' / not yet posted
+        if math.isnan(proj):
+            continue
+
+        if position == 'DST':
+            key = normalize_dst_name(raw_name)
+            if key:
+                projections[key] = proj
+            continue
+
+        name = _strip_injury_tag(raw_name)
+        key = normalize_name(name)
+        if not key:
+            continue
+        projections[key] = proj
+        if team:
+            projections[f"{key}|{team.lower()}"] = proj
+
+    return projections
+
+
+def scrape_dailyfantasyfuel(week=None):
+    """Scrape Daily Fantasy Fuel NFL DK-point projections.
+
+    Verified 2026-09: https://www.dailyfantasyfuel.com/nfl/projections/ is
+    server-rendered — the full current-slate player table (~450 rows: name
+    with injury tag, position, salary, team, opponent, projected DK points)
+    is present in the initial HTML with no login. `week` is accepted for
+    registry symmetry but ignored (DFF serves the current slate only).
+
+    Returns:
+        Dict {normalized_name: projected DK points}, or {} on failure.
+    """
+    print("  Trying DailyFantasyFuel...")
+    html = _fetch_html(DFF_URL)
+    if not html:
+        return {}
+
+    projections = _parse_dff_projections(html)
+    if not projections:
+        print("    DailyFantasyFuel: no projections parsed (page layout changed)")
+    else:
+        print(f"    DailyFantasyFuel: {len(projections)} projections")
+    return projections
+
+
+# ---------------------------------------------------------------------------
+# Source 2c: BlueCollarDFS (best-effort stub, login-walled)
+# ---------------------------------------------------------------------------
+
+BLUECOLLAR_URL = "https://bluecollardfs.com/nfl-optimizer"
+
+
+def _parse_bluecollar_projections(html):
+    """Attempt to pull player projections from the BlueCollarDFS page shell.
+
+    Best-effort: scans embedded JSON in <script> tags for name/projection
+    pairs. The optimizer renders client-side after login and projections are
+    premium-gated, so this currently finds nothing — it exists so the source
+    slots in automatically if a public payload ever appears.
+    """
+    import json
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, 'lxml')
+    projections = {}
+    for script in soup.find_all('script'):
+        text = script.string if script.string else ''
+        if not text or 'projection' not in text.lower():
+            continue
+        for match in re.finditer(r"\{[^{}]*['\"]name['\"][^{}]*\}", text):
+            try:
+                blob = json.loads(match.group(0))
+            except (json.JSONDecodeError, ValueError):
+                continue
+            name = blob.get('name') or blob.get('player')
+            pts = blob.get('projection') or blob.get('points') or blob.get('proj')
+            if not name or pts is None:
+                continue
+            try:
+                pts = float(pts)
+            except (TypeError, ValueError):
+                continue
+            key = normalize_name(name)
+            if key:
+                projections[key] = pts
+    return projections
+
+
+def scrape_bluecollar(week=None):
+    """Scrape BlueCollarDFS NFL projections (best-effort stub).
+
+    Verified 2026-09: the optimizer page is JS-rendered behind a login and
+    projections/CSV/API access are premium features, so an anonymous fetch
+    returns only the site shell. Kept as a registry slot per the
+    horse_race_predictor pattern: if a public endpoint appears or credentials
+    are wired in, it slots in without touching the pipeline.
+
+    Returns:
+        Dict {normalized_name: projected DK points}, or {} on failure.
+    """
+    print("  Trying BlueCollarDFS...")
+    html = _fetch_html(BLUECOLLAR_URL)
+    if not html:
+        return {}
+
+    projections = _parse_bluecollar_projections(html)
+    if not projections:
+        print("    BlueCollarDFS: no projections (login-walled optimizer, "
+              "projections premium-gated)")
+    else:
+        print(f"    BlueCollarDFS: {len(projections)} projections")
+    return projections
+
+
 # Registry of best-effort scrape fetchers, tried in order
 FETCHER_REGISTRY = [
+    ('dailyfantasyfuel', scrape_dailyfantasyfuel),
+    ('bluecollar', scrape_bluecollar),
     ('numberfire', scrape_numberfire),
     ('fantasypros', scrape_fantasypros),
 ]
@@ -284,6 +475,27 @@ def run_scrape_fetchers(week=None):
         if projections:
             return name, projections
     return None, {}
+
+
+def run_all_scrape_fetchers(week=None):
+    """Run every registered scrape fetcher, keeping all sources that yield data.
+
+    Used by the comparison layer (comparison.py / prediction_tracker.py),
+    which needs each source independently rather than first-wins.
+
+    Returns:
+        Dict {source_name: projections_dict} with only non-empty results.
+    """
+    results = {}
+    for name, fetcher in FETCHER_REGISTRY:
+        try:
+            projections = fetcher(week=week)
+        except Exception as e:
+            print(f"    {name} fetcher crashed: {e}")
+            continue
+        if projections:
+            results[name] = projections
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +534,103 @@ def salary_fallback_projection(salary, position):
 # Merge layer
 # ---------------------------------------------------------------------------
 
+def _resolve_player_projection(player, projections, source_name):
+    """Match one player against one source's projection dict.
+
+    DST entries match on team token; everyone else on (name, team) then
+    plain normalized name.
+
+    Returns:
+        (projection, source_name) or (None, None) if the source has no
+        projection for this player.
+    """
+    if not projections:
+        return None, None
+
+    name = player['name']
+    team = player.get('team')
+    if 'DST' in (player.get('positions') or []):
+        dst_key = normalize_dst_name(name)
+        if dst_key in projections:
+            return projections[dst_key], source_name
+        # CSV sources may key DST rows by their literal name ("Patriots DST")
+        base_key = _match_key(name)
+        if base_key in projections:
+            return projections[base_key], source_name
+        return None, None
+
+    key = _match_key(name, team)
+    if key in projections:
+        return projections[key], source_name
+    base_key = _match_key(name)
+    if base_key in projections:
+        return projections[base_key], source_name
+    return None, None
+
+
+def _attach_source(players, projections, source_name):
+    """Resolve every player against one source, salary-fallback for misses.
+
+    Returns:
+        Dict {player_id: {'projection': float, 'source': str}} — 'source'
+        is the source name when matched, 'fallback' when salary-implied.
+    """
+    attached = {}
+    for player in players:
+        projection, source = _resolve_player_projection(
+            player, projections, source_name)
+        if projection is None:
+            projection = salary_fallback_projection(
+                player.get('salary'), player['position'])
+            source = 'fallback'
+        attached[player['player_id']] = {'projection': projection, 'source': source}
+    return attached
+
+
+def get_source_projections(players, csv_path=None, week=None, allow_scrape=True):
+    """Resolve projections from EVERY available source, independently.
+
+    Unlike get_player_projections (first source wins for the main pipeline),
+    this keeps each source separate so lineups can be built per source and
+    compared (comparison.py, prediction_tracker.py). Every source dict covers
+    every player — unmatched players get the salary-implied fallback within
+    that source so its optimizer run is always feasible.
+
+    Args:
+        players: List of normalized player dicts (from dk_client.fetch_draftables,
+                 post-dedup) with name, team, salary, position
+        csv_path: Optional manual CSV projection file (one 'csv' source)
+        week: Optional NFL week number for scrapers
+        allow_scrape: Whether to attempt web scrapers
+
+    Returns:
+        Dict {source_name: {player_id: {'projection': float, 'source': str}}}.
+        'fallback' (salary-implied only) is always included as the baseline.
+    """
+    sources = {}
+
+    csv_projections = load_csv_projections(csv_path) if csv_path else {}
+    if csv_projections:
+        print(f"Loaded {len(csv_projections)} manual CSV projections")
+        sources['csv'] = _attach_source(players, csv_projections, 'csv')
+
+    if allow_scrape:
+        print("Fetching web projections from all sources (best-effort)...")
+        for name, projections in run_all_scrape_fetchers(week=week).items():
+            sources[name] = _attach_source(players, projections, name)
+
+    sources['fallback'] = {
+        player['player_id']: {
+            'projection': salary_fallback_projection(
+                player.get('salary'), player['position']),
+            'source': 'fallback',
+        }
+        for player in players
+    }
+
+    return sources
+
+
 def get_player_projections(players, csv_path=None, week=None, allow_scrape=True):
     """Resolve a projection for every player in the slate.
 
@@ -350,41 +659,17 @@ def get_player_projections(players, csv_path=None, week=None, allow_scrape=True)
         scrape_name, scrape_projections = run_scrape_fetchers(week=week)
 
     for player in players:
-        name = player['name']
-        team = player.get('team')
-        salary = player.get('salary')
-        position = player['position']
-
-        # DST entries match on team token
-        is_dst = 'DST' in (player.get('positions') or [])
-
-        projection = None
-        source = None
-
-        # 1. Manual CSV
-        if csv_projections:
-            key = _match_key(name, team)
-            if key in csv_projections:
-                projection, source = csv_projections[key], 'csv'
-            else:
-                base_key = _match_key(name)
-                if base_key in csv_projections:
-                    projection, source = csv_projections[base_key], 'csv'
-
-        # 2. Scrape results
-        if projection is None and scrape_projections:
-            if is_dst:
-                dst_key = normalize_dst_name(name)
-                if dst_key in scrape_projections:
-                    projection, source = scrape_projections[dst_key], scrape_name
-            else:
-                key = _match_key(name)
-                if key in scrape_projections:
-                    projection, source = scrape_projections[key], scrape_name
+        # 1. Manual CSV, 2. Scrape results
+        projection, source = _resolve_player_projection(
+            player, csv_projections, 'csv')
+        if projection is None:
+            projection, source = _resolve_player_projection(
+                player, scrape_projections, scrape_name)
 
         # 3. Salary-implied fallback
         if projection is None:
-            projection = salary_fallback_projection(salary, position)
+            projection = salary_fallback_projection(
+                player.get('salary'), player['position'])
             source = 'fallback'
 
         result[player['player_id']] = {'projection': projection, 'source': source}

@@ -222,3 +222,84 @@ class TestClassicOptimizer:
         }
         violations = validate_classic_lineup(thin_lineup)
         assert any('RB/WR/TE' in v for v in violations)
+
+class TestBackupPlayerFilters:
+    """Backup-QB filter + manual exclusions in build_player_pool."""
+
+    def make_qb_pool(self):
+        """NE @ SEA-style slate with two backups behind each starter."""
+        draftables = [
+            make_draftable(1, 'Drake Maye', 'QB', 'NE', 10000),
+            make_draftable(2, 'Tommy DeVito', 'QB', 'NE', 8000),
+            make_draftable(3, 'Behren Morton', 'QB', 'NE', 6000),
+            make_draftable(4, 'Sam Darnold', 'QB', 'SEA', 9400),
+            make_draftable(5, 'Drew Lock', 'QB', 'SEA', 7400),
+            make_draftable(6, 'Rhamondre Stevenson', 'RB', 'NE', 8400),
+        ]
+        return draftables, make_projections([1, 2, 3, 4, 5, 6])
+
+    def test_backup_qbs_dropped_by_default(self):
+        draftables, projections = self.make_qb_pool()
+        pool = build_player_pool(draftables, projections)
+        names = {p['name'] for p in pool}
+        assert names == {'Drake Maye', 'Sam Darnold', 'Rhamondre Stevenson'}
+
+    def test_filter_backup_qbs_direct(self):
+        from player_builder import filter_backup_qbs
+        draftables, projections = self.make_qb_pool()
+        pool = build_player_pool(draftables, projections,
+                                 drop_backup_qbs=False)
+        kept, dropped = filter_backup_qbs(pool)
+        assert {p['name'] for p in kept} == {'Drake Maye', 'Sam Darnold',
+                                             'Rhamondre Stevenson'}
+        assert {p['name'] for p in dropped} == {'Tommy DeVito',
+                                               'Behren Morton', 'Drew Lock'}
+
+    def test_keep_backup_qbs_opt_out(self):
+        draftables, projections = self.make_qb_pool()
+        pool = build_player_pool(draftables, projections, drop_backup_qbs=False)
+        assert len(pool) == 6  # nothing dropped
+
+    def test_tied_qb_salary_keeps_both(self):
+        # Can't tell a true QB controversy apart — keep both
+        draftables = [
+            make_draftable(1, 'QB A', 'QB', 'NE', 9000),
+            make_draftable(2, 'QB B', 'QB', 'NE', 9000),
+        ]
+        pool = build_player_pool(draftables, make_projections([1, 2]))
+        assert len(pool) == 2
+
+    def test_non_qb_positions_untouched(self):
+        # Backup RBs/WRs are legitimately playable — only QBs are filtered
+        draftables = [
+            make_draftable(1, 'Starter RB', 'RB', 'NE', 8000),
+            make_draftable(2, 'Backup RB', 'RB', 'NE', 3000),
+        ]
+        pool = build_player_pool(draftables, make_projections([1, 2]))
+        assert len(pool) == 2
+
+    def test_exclude_by_name_string(self):
+        draftables, projections = self.make_qb_pool()
+        pool = build_player_pool(draftables, projections,
+                                 drop_backup_qbs=False,
+                                 exclude='Rhamondre Stevenson, Tommy DeVito')
+        assert {p['name'] for p in pool} == {'Drake Maye',
+                                            'Behren Morton', 'Sam Darnold',
+                                            'Drew Lock'}
+
+    def test_exclude_dst_entry(self):
+        from player_builder import exclude_named_players
+        draftables = [
+            make_draftable(1, 'Seahawks DST', 'DST', 'SEA', 2800),
+            make_draftable(2, 'Kenneth Walker', 'RB', 'SEA', 8600),
+        ]
+        pool = build_player_pool(draftables, make_projections([1, 2]),
+                                 drop_backup_qbs=False)
+        kept, dropped = exclude_named_players(pool, ['Seahawks DST'])
+        assert [p['name'] for p in kept] == ['Kenneth Walker']
+        assert [p['name'] for p in dropped] == ['Seahawks DST']
+
+    def test_exclude_noop_on_empty(self):
+        draftables, projections = self.make_qb_pool()
+        pool = build_player_pool(draftables, projections, exclude=None)
+        assert 'Rhamondre Stevenson' in {p['name'] for p in pool}

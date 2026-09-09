@@ -5,6 +5,9 @@ Adapted from dfs_lineup_optimizer/player_builder.py:
 - Deduplicates CPT/UTIL entries (showdown slates list each player twice,
   CPT at 1.5x salary; we keep the base-salary entry)
 - Skips disabled players and sub-minimum salaries
+- Drops backup QBs (DK draftables carry no depth-chart flag, so the salary
+  gap within a team's QBs is the starter signal) and any manually excluded
+  players
 - Attaches projections resolved by projections.get_player_projections
 - Builds pydfs Player objects for the classic optimizer, plain dicts for
   the showdown MILP
@@ -12,10 +15,69 @@ Adapted from dfs_lineup_optimizer/player_builder.py:
 
 from pydfs_lineup_optimizer.player import Player as PyDFSPlayer, GameInfo
 
+from projections import normalize_dst_name, normalize_name
+
 MIN_SALARY = 300  # DK NFL minimum salary ($300)
 
 
-def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY):
+def filter_backup_qbs(pool):
+    """Drop backup QBs: keep only each team's top-salaried QB (ties kept).
+
+    DK draftables have no starter/backup flag, but DK prices the expected
+    starter well above the backups (e.g. NE @ SEA: Maye $10,000 vs DeVito
+    $8,000 / Morton $6,000). Showdown has no position constraints, so
+    without this filter the MILP happily stacks a team's backup QBs.
+
+    Returns:
+        (kept, dropped) pool entries
+    """
+    max_qb_salary = {}
+    for entry in pool:
+        if 'QB' in (entry.get('positions') or []):
+            team = entry.get('team')
+            max_qb_salary[team] = max(max_qb_salary.get(team, 0),
+                                      entry.get('salary') or 0)
+
+    kept, dropped = [], []
+    for entry in pool:
+        is_backup_qb = ('QB' in (entry.get('positions') or [])
+                        and (entry.get('salary') or 0)
+                        < max_qb_salary.get(entry.get('team'), 0))
+        (dropped if is_backup_qb else kept).append(entry)
+    return kept, dropped
+
+
+def _exclusion_keys(name):
+    """Both normalization forms of an exclusion name (player + DST)."""
+    return {normalize_name(name), normalize_dst_name(name)}
+
+
+def exclude_named_players(pool, exclude):
+    """Drop players whose (normalized) name is in the exclude list.
+
+    Args:
+        exclude: Iterable of names, or one comma-separated string
+            ("Tommy DeVito, Seahawks DST")
+
+    Returns:
+        (kept, dropped) pool entries
+    """
+    if isinstance(exclude, str):
+        exclude = [n.strip() for n in exclude.split(',') if n.strip()]
+
+    keys = set()
+    for name in exclude or []:
+        keys |= _exclusion_keys(name)
+
+    kept, dropped = [], []
+    for entry in pool:
+        player_keys = _exclusion_keys(entry['name'])
+        (dropped if player_keys & keys else kept).append(entry)
+    return kept, dropped
+
+
+def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
+                     drop_backup_qbs=True, exclude=None, verbose=True):
     """Build the deduplicated, projected player pool.
 
     Args:
@@ -23,6 +85,12 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY):
         player_projections: {player_id: {'projection': float, 'source': str}}
             from projections.get_player_projections
         min_salary: Minimum salary to include (default $300, DK NFL minimum)
+        drop_backup_qbs: Keep only each team's top-salaried QB (default
+            True — DK salaries flag the starter)
+        exclude: Player names to drop from every lineup (list or one
+            comma-separated string), for manual backup/depth exclusions
+        verbose: Print what the filters dropped (disable for repeated
+            per-source pool builds so the note prints once)
 
     Returns:
         List of player dicts with:
@@ -50,6 +118,19 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY):
         entry['projection'] = proj_info.get('projection', 0.0)
         entry['source'] = proj_info.get('source', 'fallback')
         pool.append(entry)
+
+    if exclude:
+        pool, excluded = exclude_named_players(pool, exclude)
+        if excluded and verbose:
+            names = ', '.join(p['name'] for p in excluded)
+            print(f"Excluded {len(excluded)} players: {names}")
+
+    if drop_backup_qbs:
+        pool, backup_qbs = filter_backup_qbs(pool)
+        if backup_qbs and verbose:
+            names = ', '.join(f"{p['name']} ({p['team']})" for p in backup_qbs)
+            print(f"Backup QB filter: dropped {len(backup_qbs)} "
+                  f"({names}) - kept each team's top-salaried QB")
 
     return pool
 
