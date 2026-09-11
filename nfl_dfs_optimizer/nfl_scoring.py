@@ -32,6 +32,7 @@ class NFLScoringRules:
     # Misc
     fumble_lost: float = -1.0
     two_point_conversion: float = 2.0
+    touchdown: float = 6.0          # kick/punt return TDs (no yardage pts)
 
 
 @dataclass(frozen=True)
@@ -67,12 +68,58 @@ class DSTScoring:
         raise ValueError(f"Invalid points_allowed: {points_allowed}")
 
 
+@dataclass(frozen=True)
+class KickerScoring:
+    """DraftKings NFL kicker scoring constants."""
+
+    extra_point: float = 1.0
+    field_goal_bonus: float = 3.0   # 3+ FGs made in a game
+
+    # Field goal distance tiers: (low, high, points)
+    FIELD_GOAL_TIERS = [
+        (10, 19, 3.0),
+        (20, 29, 3.0),
+        (30, 39, 3.0),
+        (40, 49, 4.0),
+        (50, 59, 5.0),
+        (60, 99, 6.0),
+    ]
+
+    @classmethod
+    def field_goal_points(cls, distance: int) -> float:
+        """Return DK points for one made field goal by distance."""
+        for low, high, pts in cls.FIELD_GOAL_TIERS:
+            if low <= distance <= high:
+                return pts
+        raise ValueError(f"Invalid field goal distance: {distance}")
+
+
+def calculate_kicker_points(field_goals=(), extra_points=0,
+                            rules: KickerScoring = None) -> float:
+    """Calculate DK fantasy points for a kicker's game.
+
+    Args:
+        field_goals: Distances (yards) of each made field goal
+        extra_points: Made extra points
+    """
+    r = rules or KickerScoring()
+    points = sum(r.field_goal_points(d) for d in field_goals)
+    if len(field_goals) >= 3:
+        points += r.field_goal_bonus
+    return points + extra_points * r.extra_point
+
+
 def calculate_offensive_points(pass_yards=0, pass_tds=0, interceptions=0,
                                rush_yards=0, rush_tds=0,
                                receptions=0, rec_yards=0, rec_tds=0,
                                fumbles_lost=0, two_pt_conversions=0,
+                               return_tds=0,
                                rules: NFLScoringRules = None) -> float:
-    """Calculate DK fantasy points for an offensive stat line."""
+    """Calculate DK fantasy points for an offensive stat line.
+
+    return_tds covers kick- and punt-return touchdowns (6 pts each; DK
+    gives no points for return yardage itself).
+    """
     r = rules or NFLScoringRules()
 
     points = (
@@ -86,6 +133,7 @@ def calculate_offensive_points(pass_yards=0, pass_tds=0, interceptions=0,
         + rec_tds * r.receiving_touchdown
         + fumbles_lost * r.fumble_lost
         + two_pt_conversions * r.two_point_conversion
+        + return_tds * r.touchdown
     )
 
     # Yardage bonuses

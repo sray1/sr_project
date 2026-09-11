@@ -9,7 +9,19 @@ from projections import (
     salary_fallback_projection, get_player_projections, get_source_projections,
     _match_key,
     _parse_dff_projections, _parse_bluecollar_projections, _strip_injury_tag,
+    get_dff_out_names, get_dff_team_mismatches, scrape_dailyfantasyfuel,
 )
+import projections
+
+
+@pytest.fixture(autouse=True)
+def clean_dff_out_cache():
+    """Isolate the DFF OUT-name and team caches between tests."""
+    projections._dff_out_cache = None
+    projections._dff_team_cache = None
+    yield
+    projections._dff_out_cache = None
+    projections._dff_team_cache = None
 
 
 class TestNameNormalization:
@@ -212,12 +224,18 @@ class TestDFFParser:
           <td>QB</td><td class="box">No Proj</td><td>$ 5.0k</td><td>KC</td>
           <td>DEN</td><td>20</td><td>--</td><td>2.50</td>
         </tr>
+        <tr data-inj="O">
+          <td class="hidden-sm hidden-md hidden-lg">Z. Charbonnet RB $8200</td>
+          <td>RB</td><td class="box">Zach Charbonnet O</td><td>$ 8.2k</td>
+          <td>SEA</td><td>NE</td><td>18</td><td>15.4</td><td>1.88</td>
+        </tr>
       </tbody>
     </table>
     """
 
     def test_mini_table(self):
-        projections = _parse_dff_projections(self.MINI_HTML)
+        projections, out_names, team_map = _parse_dff_projections(
+            self.MINI_HTML)
         assert projections['jahmyr gibbs'] == 23.8
         assert projections['jahmyr gibbs|det'] == 23.8
         # Injury tag stripped, apostrophe normalized like DK names
@@ -228,29 +246,242 @@ class TestDFFParser:
         assert 'jaguars|jax' not in projections
         # '--' projections are skipped
         assert 'no proj' not in projections
+        # data-inj="O" -> excluded from projections, reported as OUT
+        # (name, team) tuple: team-qualified for pool exclusion matching
+        assert 'zach charbonnet' not in projections
+        assert out_names == [('Zach Charbonnet', 'SEA')]
+        # Team map covers every non-DST row — projected, '--' and OUT alike
+        # (traded players are detected even without a posted projection)
+        assert team_map == {'jahmyr gibbs': {'DET'},
+                            'ja marr chase': {'CIN'},
+                            'no proj': {'KC'},
+                            'zach charbonnet': {'SEA'}}
 
     def test_no_table_returns_empty(self):
-        assert _parse_dff_projections('<html><body><p>hi</p></body></html>') == {}
+        assert _parse_dff_projections(
+            '<html><body><p>hi</p></body></html>') == ({}, [], {})
 
     def test_missing_detail_header_returns_empty(self):
         # Group-only header row (no POS/NAME) -> layout unrecognized
         html = ('<table><thead><tr><th>PLAYER</th></tr></thead>'
                 '<tbody><tr><td>RB</td><td>Jahmyr Gibbs</td></tr></tbody></table>')
-        assert _parse_dff_projections(html) == {}
+        assert _parse_dff_projections(html) == ({}, [], {})
 
     def test_frozen_fixture(self):
         """Full live page frozen 2026-09-08 (16-game week-1 slate)."""
-        projections = _parse_dff_projections(load_fixture('dff_projections.html'))
+        projections, out_names, team_map = _parse_dff_projections(
+            load_fixture('dff_projections.html'))
         assert len(projections) > 800  # ~450 players x (name + name|team) keys
         assert projections['jahmyr gibbs'] == 23.8
         assert projections['patrick mahomes'] == 17.5
         assert projections['travis kelce'] == 11.2
         assert projections['jaguars'] == 7.3
+        # 19 unique players listed OUT/IR on the board (2 listed twice by
+        # DFF, deduped): excluded from projections, team-qualified
+        assert len(out_names) == 19
+        assert ('Zach Charbonnet', 'SEA') in out_names
+        assert ('TreVeyon Henderson', 'NE') in out_names
+        assert ('Michael Penix Jr.', 'ATL') in out_names
+        assert 'zach charbonnet' not in projections
+        assert 'treveyon henderson' not in projections
+        # Questionable players stay in (they may play)
+        assert 'tory horton' in projections
+        # Team map: one entry per listed player, teams match DK abbreviations
+        assert 300 < len(team_map) < 600
+        assert team_map['jahmyr gibbs'] == {'DET'}
+        assert team_map['zach charbonnet'] == {'SEA'}  # OUT rows included
+        assert 'jaguars' not in team_map  # DST rows excluded
 
     def test_scraper_registered_first(self):
         from projections import FETCHER_REGISTRY
         assert FETCHER_REGISTRY[0][0] == 'dailyfantasyfuel'
         assert 'bluecollar' in [name for name, _ in FETCHER_REGISTRY]
+
+
+class TestDFFOutList:
+    def test_scrape_populates_cache(self, monkeypatch):
+        monkeypatch.setattr(projections, '_fetch_html',
+                            lambda url: load_fixture('dff_projections.html'))
+        scrape_dailyfantasyfuel()
+        out_names = get_dff_out_names()
+        assert ('Zach Charbonnet', 'SEA') in out_names
+        assert ('TreVeyon Henderson', 'NE') in out_names
+
+    def test_cached_names_avoid_refetch(self, monkeypatch):
+        monkeypatch.setattr(projections, '_dff_out_cache',
+                            [('Zach Charbonnet', 'SEA')])
+        def boom(week=None):
+            raise AssertionError('must not re-scrape')
+        monkeypatch.setattr(projections, 'scrape_dailyfantasyfuel', boom)
+        assert get_dff_out_names() == [('Zach Charbonnet', 'SEA')]
+
+    def test_no_cache_no_scrape_returns_empty(self, monkeypatch):
+        def boom(week=None):
+            raise AssertionError('must not scrape')
+        monkeypatch.setattr(projections, 'scrape_dailyfantasyfuel', boom)
+        assert get_dff_out_names(allow_scrape=False) == []
+
+    def test_failed_scrape_yields_empty_not_none(self, monkeypatch):
+        monkeypatch.setattr(projections, '_fetch_html', lambda url: None)
+        assert scrape_dailyfantasyfuel() == {}
+        # cache [] (not None) so get_dff_out_names never re-fetches
+        assert get_dff_out_names() == []
+
+    def test_merge_with_manual_exclusions(self):
+        from player_builder import merge_exclusions
+        merged = merge_exclusions('Tommy DeVito, Seahawks DST',
+                                  [('Zach Charbonnet', 'SEA'),
+                                   ('TreVeyon Henderson', 'NE')])
+        assert merged == ['Tommy DeVito', 'Seahawks DST',
+                          ('Zach Charbonnet', 'SEA'),
+                          ('TreVeyon Henderson', 'NE')]
+
+
+class TestDFFTeamMismatch:
+    """Traded players: DK slate entries DFF lists under a different team."""
+
+    @staticmethod
+    def dk_player(name, team, positions=('WR',)):
+        return {'name': name, 'team': team, 'positions': list(positions)}
+
+    def _load_fixture_cache(self, monkeypatch):
+        monkeypatch.setattr(projections, '_fetch_html',
+                            lambda url: load_fixture('dff_projections.html'))
+
+    def test_traded_player_flagged_with_dk_team(self, monkeypatch):
+        # DK's slate still lists Charbonnet on NE; DFF's board carries SEA
+        self._load_fixture_cache(monkeypatch)
+        players = [self.dk_player('Zach Charbonnet', 'NE')]
+        assert get_dff_team_mismatches(players) == [('Zach Charbonnet', 'NE')]
+
+    def test_matching_team_not_flagged(self, monkeypatch):
+        self._load_fixture_cache(monkeypatch)
+        players = [self.dk_player('Zach Charbonnet', 'SEA'),
+                   self.dk_player('Jahmyr Gibbs', 'DET')]
+        assert get_dff_team_mismatches(players) == []
+
+    def test_player_not_on_dff_board_not_flagged(self, monkeypatch):
+        self._load_fixture_cache(monkeypatch)
+        assert get_dff_team_mismatches(
+            [self.dk_player('Never Heard Of Him', 'NE')]) == []
+
+    def test_dst_entries_skipped(self, monkeypatch):
+        self._load_fixture_cache(monkeypatch)
+        players = [self.dk_player('Jaguars', 'NE', ('DST',))]
+        assert get_dff_team_mismatches(players) == []
+
+    def test_team_abbr_alias_not_a_mismatch(self, monkeypatch):
+        # Convention drift between sites (WSH vs WAS) must never exclude
+        monkeypatch.setattr(projections, '_dff_team_cache',
+                            {'jacob smith': {'WSH'}})
+        assert get_dff_team_mismatches(
+            [self.dk_player('Jacob Smith', 'WAS')]) == []
+
+    def test_same_name_on_two_dff_teams_not_flagged(self, monkeypatch):
+        # Two same-named players league-wide; the DK entry matches one
+        monkeypatch.setattr(projections, '_dff_team_cache',
+                            {'jacob smith': {'NE', 'HOU'}})
+        assert get_dff_team_mismatches(
+            [self.dk_player('Jacob Smith', 'NE')]) == []
+
+    def test_dk_player_without_team_skipped(self, monkeypatch):
+        monkeypatch.setattr(projections, '_dff_team_cache',
+                            {'jacob smith': {'HOU'}})
+        assert get_dff_team_mismatches(
+            [self.dk_player('Jacob Smith', '')]) == []
+
+    def test_failed_scrape_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(projections, '_fetch_html', lambda url: None)
+        assert get_dff_team_mismatches(
+            [self.dk_player('Zach Charbonnet', 'NE')]) == []
+
+    def test_no_cache_no_scrape_returns_empty(self, monkeypatch):
+        def boom(week=None):
+            raise AssertionError('must not scrape')
+        monkeypatch.setattr(projections, 'scrape_dailyfantasyfuel', boom)
+        assert get_dff_team_mismatches(
+            [self.dk_player('Zach Charbonnet', 'NE')],
+            allow_scrape=False) == []
+
+    def test_out_entries_excluded_from_pool(self):
+        from player_builder import build_player_pool
+        draftables = [
+            {'player_id': 1, 'name': 'Zach Charbonnet', 'position': 'RB',
+             'positions': ['RB'], 'salary': 8200, 'team': 'SEA',
+             'game': 'NE @ SEA', 'game_start': None, 'is_disabled': False},
+            {'player_id': 2, 'name': 'Kenneth Walker', 'position': 'RB',
+             'positions': ['RB'], 'salary': 8600, 'team': 'SEA',
+             'game': 'NE @ SEA', 'game_start': None, 'is_disabled': False},
+        ]
+        fallbacks = {p['player_id']: {'projection': 15.0,
+                                       'source': 'fallback'}
+                     for p in draftables}
+        # Pool-level exclusion: salary fallback must not resurrect an
+        # OUT player's projection into a lineup
+        pool = build_player_pool(draftables, fallbacks,
+                                 exclude=[('Zach Charbonnet', 'SEA')])
+        assert [p['name'] for p in pool] == ['Kenneth Walker']
+
+    def test_name_collision_not_excluded(self):
+        """League-wide OUT entries must not hit same-named/tokend players.
+
+        Regression (live 2026-09-08): 'Sincere Brown' (LAC, OUT) and
+        'Michael Penix Jr.' (ATL, OUT) wrongly excluded 'A.J. Brown' (NE)
+        and 'Velus Jones Jr.' / 'Montorie Foster Jr.' (SEA) from the
+        NE @ SEA pool via last-name token matching.
+        """
+        from player_builder import build_player_pool
+        draftables = [
+            {'player_id': 1, 'name': 'A.J. Brown', 'position': 'WR',
+             'positions': ['WR'], 'salary': 9600, 'team': 'NE',
+             'game': 'NE @ SEA', 'game_start': None, 'is_disabled': False},
+            {'player_id': 2, 'name': 'Velus Jones Jr.', 'position': 'RB',
+             'positions': ['RB'], 'salary': 3000, 'team': 'SEA',
+             'game': 'NE @ SEA', 'game_start': None, 'is_disabled': False},
+            {'player_id': 3, 'name': 'Sincere Brown', 'position': 'WR',
+             'positions': ['WR'], 'salary': 1200, 'team': 'LAC',
+             'game': 'LAC @ KC', 'game_start': None, 'is_disabled': False},
+            {'player_id': 4, 'name': 'Zach Charbonnet', 'position': 'RB',
+             'positions': ['RB'], 'salary': 8200, 'team': 'SEA',
+             'game': 'NE @ SEA', 'game_start': None, 'is_disabled': False},
+        ]
+        fallbacks = {p['player_id']: {'projection': 15.0,
+                                       'source': 'fallback'}
+                     for p in draftables}
+        pool = build_player_pool(draftables, fallbacks, exclude=[
+            ('Sincere Brown', 'LAC'),          # OUT, other team
+            ('Michael Penix Jr.', 'ATL'),      # OUT, 'Jr.' token
+            ('Zach Charbonnet', 'SEA'),        # OUT, on this slate
+        ])
+        names = [p['name'] for p in pool]
+        # Wrongly matched before the fix — must stay in the pool
+        assert 'A.J. Brown' in names
+        assert 'Velus Jones Jr.' in names
+        # Legitimately excluded
+        assert 'Sincere Brown' not in names
+        assert 'Zach Charbonnet' not in names
+
+    def test_same_name_different_team_not_excluded(self):
+        """OUT 'A.J. Brown' on PHI must not exclude NE's A.J. Brown."""
+        from player_builder import exclude_named_players
+        pool = [
+            {'name': 'A.J. Brown', 'team': 'NE'},
+            {'name': 'A.J. Brown', 'team': 'PHI'},
+        ]
+        kept, dropped = exclude_named_players(pool, [('A.J. Brown', 'PHI')])
+        assert [p['team'] for p in kept] == ['NE']
+        assert [p['team'] for p in dropped] == ['PHI']
+
+    def test_manual_bare_name_still_matches_all_teams(self):
+        """--exclude 'A.J. Brown' (no team) drops every same-named player."""
+        from player_builder import exclude_named_players
+        pool = [
+            {'name': 'A.J. Brown', 'team': 'NE'},
+            {'name': 'A.J. Brown', 'team': 'PHI'},
+        ]
+        kept, dropped = exclude_named_players(pool, ['A.J. Brown'])
+        assert kept == []
+        assert len(dropped) == 2
 
 
 class TestBlueCollarStub:
@@ -265,6 +496,74 @@ class TestBlueCollarStub:
                 '</script></body></html>')
         projections = _parse_bluecollar_projections(html)
         assert projections['patrick mahomes'] == 18.2
+
+
+class TestBlueCollarAPI:
+    """Developer-API path (premium key in BLUECOLLAR_API_KEY, 2026-09)."""
+
+    API_JSON = {
+        'slates': [{
+            'slate': 'Main', 'slate_type': 'classic', 'date': '09_14_26',
+            'info': [
+                {'name': 'Patrick Mahomes', 'team': 'KC', 'position': 'QB',
+                 'opponent': 'LV', 'projection': '21.4', 'salary': '8200',
+                 'value': '2.6'},
+                {'name': 'Chiefs', 'team': 'KC', 'position': 'DST',
+                 'opponent': 'LV', 'projection': '9.1', 'salary': '3100',
+                 'value': '2.9'},
+                {'name': 'Bad Row', 'team': 'KC', 'position': 'WR',
+                 'opponent': 'LV', 'projection': '--', 'salary': '3000',
+                 'value': '0.0'},
+            ],
+        }],
+    }
+
+    def test_parse_api_json(self):
+        from projections import _parse_bluecollar_api
+        projections = _parse_bluecollar_api(self.API_JSON)
+        assert projections['patrick mahomes'] == 21.4
+        assert projections['patrick mahomes|kc'] == 21.4
+        # DST rows match on team token, no team-suffix key
+        assert projections['chiefs'] == 9.1
+        assert 'chiefs|kc' not in projections
+        # Unparseable projection strings are skipped
+        assert 'bad row' not in projections
+
+    def test_no_key_skips_api(self, monkeypatch):
+        import projections
+        monkeypatch.delenv('BLUECOLLAR_API_KEY', raising=False)
+        monkeypatch.delenv('BCDFS_API_KEY', raising=False)
+        def boom():
+            raise AssertionError('must not call the API without a key')
+        monkeypatch.setattr(projections.requests, 'get', boom)
+        projections_list, status = projections.fetch_bluecollar_api()
+        assert projections_list is None and status is None
+
+    def test_api_error_returns_empty(self, monkeypatch, capsys):
+        import projections
+        monkeypatch.setenv('BLUECOLLAR_API_KEY', 'bcdfs_live_test')
+
+        class Resp:
+            status_code = 401
+            text = '{"error": "API key required"}'
+            def json(self):
+                return {'error': 'API key required'}
+        monkeypatch.setattr(projections.requests, 'get',
+                            lambda url, headers=None, timeout=None: Resp())
+        projections_list, status = projections.fetch_bluecollar_api()
+        assert projections_list == {} and status == 401
+        assert 'HTTP 401' in capsys.readouterr().out
+
+    def test_scrape_uses_api_when_keyed(self, monkeypatch):
+        import projections
+        monkeypatch.setenv('BCDFS_API_KEY', 'bcdfs_live_test')
+        monkeypatch.setattr(projections, 'fetch_bluecollar_api',
+                            lambda timeout=15: (
+                                projections._parse_bluecollar_api(
+                                    self.API_JSON), 200))
+        result = projections.scrape_bluecollar()
+        assert result['patrick mahomes'] == 21.4
+        assert result['chiefs'] == 9.1
 
 
 class TestGetSourceProjections:

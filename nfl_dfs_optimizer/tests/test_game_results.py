@@ -4,7 +4,7 @@ import json
 import os
 
 from game_results import (_stat_number, parse_game_string, parse_dst_points,
-                          parse_player_stats)
+                          parse_kicker_points, parse_player_stats)
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures',
                        'espn_summary.json')
@@ -59,6 +59,170 @@ class TestParsePlayerStats:
         players = parse_player_stats(load_summary())
         assert len(players) > 20
         assert all(v['fppg'] >= 0 for v in players.values())
+
+    def test_appended_column_does_not_skip_group(self):
+        # Live 2026-09-09: ESPN inserted 'QBR' into the passing row after
+        # the game went final; a positional prefix check silently zeroed
+        # every QB's passing stats. Label-name indexing must survive it.
+        summary = load_summary()
+        for side in summary['boxscore']['players']:
+            for group in side.get('statistics', []):
+                if group.get('name') == 'passing':
+                    group['labels'] = ['C/ATT', 'YDS', 'AVG', 'TD', 'INT',
+                                       'SACKS', 'QBR', 'RTG']
+                    for entry in group.get('athletes', []):
+                        stats = entry['stats']
+                        entry['stats'] = stats[:6] + ['55.0'] + stats[6:]
+        players = parse_player_stats(summary)
+        assert players['joshua dobbs']['fppg'] == 13.12  # unchanged
+
+    def test_reordered_columns_still_read(self):
+        # Column ORDER can change too — reads are by label name
+        summary = load_summary()
+        for side in summary['boxscore']['players']:
+            for group in side.get('statistics', []):
+                if group.get('name') == 'receiving':
+                    group['labels'] = ['TGTS', 'REC', 'YDS', 'AVG', 'TD',
+                                       'LONG']
+                    for entry in group.get('athletes', []):
+                        stats = entry['stats']
+                        entry['stats'] = [stats[5], stats[0], stats[1],
+                                          stats[2], stats[3], stats[4]]
+        players = parse_player_stats(summary)
+        assert players['lucky jackson']['fppg'] == 14.4  # unchanged
+
+
+class TestKickerScoring:
+    def test_field_goal_distance_tiers(self):
+        from nfl_scoring import calculate_kicker_points
+        assert calculate_kicker_points([30]) == 3.0   # 30-39 yd FG
+        assert calculate_kicker_points([45]) == 4.0   # 40-49 yd FG
+        assert calculate_kicker_points([52]) == 5.0   # 50-59 yd FG
+        assert calculate_kicker_points([62]) == 6.0   # 60+ yd FG
+
+    def test_extra_points_and_bonus(self):
+        from nfl_scoring import calculate_kicker_points
+        # 2 FGs (3+4) + 3 XPs = 10.0; the 3rd FG adds the 3+ FG bonus
+        assert calculate_kicker_points([30, 45], 3) == 10.0
+        assert calculate_kicker_points([30, 45, 52], 3) == 18.0
+
+    def test_no_makes_is_zero(self):
+        from nfl_scoring import calculate_kicker_points
+        assert calculate_kicker_points([], 0) == 0.0
+
+
+class TestParseKickerPoints:
+    """Kicker actuals from ESPN scoring plays (live-verified 2026-09-09).
+
+    NE@SEA week 1: Borregales 50-yd FG + 1 XP; Myers FGs from 30 and 26
+    + 1 XP; JSN's TD was a Lock pass with the Myers XP attached.
+    """
+    SUMMARY = {
+        'boxscore': {'players': [
+            {'team': {'abbreviation': 'NE'}, 'statistics': [
+                {'name': 'kicking', 'labels': [], 'athletes': [
+                    {'athlete': {'displayName': 'Andy Borregales'},
+                     'stats': ['1/1', '100.0', '50', '1/1', '4']}]},
+            ]},
+            {'team': {'abbreviation': 'SEA'}, 'statistics': [
+                {'name': 'kicking', 'labels': [], 'athletes': [
+                    {'athlete': {'displayName': 'Jason Myers'},
+                     'stats': ['2/2', '100.0', '30', '1/1', '7']}]},
+            ]},
+        ]},
+        'scoringPlays': [
+            {'text': 'Eli Raridon 2 Yd pass from Drake Maye '
+                     '(Andy Borregales Kick)'},
+            {'text': 'Andy Borregales 50 Yd Field Goal'},
+            {'text': 'Jason Myers 30 Yd Field Goal'},
+            {'text': 'Jaxon Smith-Njigba 45 Yd pass from Drew Lock '
+                     '(Jason Myers Kick)'},
+            {'text': 'Jason Myers 26 Yd Field Goal'},
+        ],
+    }
+
+    def test_distance_scored_kickers(self):
+        kickers = parse_kicker_points(self.SUMMARY)
+        # Borregales: 50-yd FG (5) + 1 XP = 6.0
+        assert kickers['andy borregales']['fppg'] == 6.0
+        assert kickers['andy borregales']['team'] == 'NE'
+        assert kickers['andy borregales']['stats']['field_goals'] == [50]
+        # Myers: 3 + 3 + 1 XP = 7.0
+        assert kickers['jason myers']['fppg'] == 7.0
+        assert kickers['jason myers']['stats']['field_goals'] == [26, 30]
+        assert kickers['jason myers']['stats']['extra_points'] == 1
+
+    def test_kicker_with_no_makes_gets_zero_row(self):
+        # Played (box category) but made nothing: an exact 0, not a missing
+        # row — otherwise the tracker counts them as a mismatch penalty
+        summary = {'boxscore': {'players': [
+            {'team': {'abbreviation': 'NE'}, 'statistics': [
+                {'name': 'kicking', 'labels': [], 'athletes': [
+                    {'athlete': {'displayName': 'Blank Kicker'},
+                     'stats': ['0/1', '0.0', '-', '0/0', '0']}]}]}]},
+            'scoringPlays': []}
+        kickers = parse_kicker_points(summary)
+        assert kickers['blank kicker']['fppg'] == 0.0
+
+    def test_scoring_plays_for_other_players_ignored(self):
+        # TD passes: scorer gets nothing, only the kicker's XP counts
+        summary = {'boxscore': {'players': [
+            {'team': {'abbreviation': 'NE'}, 'statistics': [
+                {'name': 'kicking', 'labels': [], 'athletes': [
+                    {'athlete': {'displayName': 'Andy Borregales'},
+                     'stats': ['0/0', '0.0', '-', '1/1', '1']}]}]}]},
+            'scoringPlays': [
+                {'text': 'Eli Raridon 2 Yd pass from Drake Maye '
+                         '(Andy Borregales Kick)'}]}
+        kickers = parse_kicker_points(summary)
+        assert 'eli raridon' not in kickers
+        assert kickers['andy borregales']['fppg'] == 1.0
+
+    def test_empty_summary_returns_empty(self):
+        assert parse_kicker_points({}) == {}
+        assert parse_kicker_points({'boxscore': {}, 'scoringPlays': []}) == {}
+
+
+class TestReturnStats:
+    """Kick/punt return groups: TDs score 6; return-only players get 0 rows."""
+
+    SUMMARY = {'boxscore': {'players': [
+        {'team': {'abbreviation': 'SEA'}, 'statistics': [
+            {'name': 'kickReturns',
+             'labels': ['NO', 'YDS', 'AVG', 'LONG', 'TD'],
+             'athletes': [
+                 {'athlete': {'displayName': 'DeeJay Dallas', 'id': 1},
+                  'stats': ['3', '98', '32.7', '45', '1']},
+                 {'athlete': {'displayName': 'Plain Returner', 'id': 2},
+                  'stats': ['2', '17', '8.5', '13', '0']},
+             ]},
+        ]},
+    ]}}
+
+    def test_return_td_scores_six(self):
+        players = parse_player_stats(self.SUMMARY)
+        assert players['deejay dallas']['fppg'] == 6.0
+        assert players['deejay dallas']['stats']['kickReturns']['touchdowns'] == 1.0
+
+    def test_return_only_player_gets_explicit_zero_row(self):
+        # Played, no scoring stats: an exact 0 row, not a missing row —
+        # otherwise "no recorded actual" can't distinguish a scratch from
+        # a name-matching miss
+        players = parse_player_stats(self.SUMMARY)
+        assert players['plain returner']['fppg'] == 0.0
+
+    def test_return_yardage_scores_nothing(self):
+        # 98 return yards, no TD -> 0 DK points (no yardage scoring)
+        summary = {'boxscore': {'players': [
+            {'team': {'abbreviation': 'SEA'}, 'statistics': [
+                {'name': 'puntReturns',
+                 'labels': ['NO', 'YDS', 'AVG', 'LONG', 'TD'],
+                 'athletes': [
+                     {'athlete': {'displayName': 'Yardage Only', 'id': 3},
+                      'stats': ['5', '98', '19.6', '40', '0']}]},
+            ]},
+        ]}}
+        assert parse_player_stats(summary)['yardage only']['fppg'] == 0.0
 
 
 class TestParseDSTPoints:

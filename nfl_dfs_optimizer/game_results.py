@@ -7,7 +7,11 @@ Primary source: ESPN's hidden site API (JSON, no auth, stable for years):
 
 Offensive DK points are computed with nfl_scoring.calculate_offensive_points
 from the label-indexed stat arrays (passing/rushing/receiving/fumbles groups);
-DST points with nfl_scoring.DSTScoring from team totals + opponent score.
+DST points with nfl_scoring.DSTScoring from team totals + opponent score;
+kicker points with nfl_scoring.calculate_kicker_points from the scoring-plays
+list (the box-score 'kicking' group only carries aggregates, but DK points
+depend on FIELD GOAL DISTANCE, which every scoring play spells out:
+"Jason Myers 30 Yd Field Goal", "(Andy Borregales Kick)" for extra points).
 
 Known approximations (ESPN team totals lack them): blocked kicks, safeties,
 and DST extra-point/two-point returns are scored as 0, as are player-level
@@ -18,7 +22,8 @@ import re
 
 import requests
 
-from nfl_scoring import calculate_offensive_points, DSTScoring
+from nfl_scoring import (calculate_kicker_points, calculate_offensive_points,
+                         DSTScoring)
 from projections import normalize_name, normalize_dst_name
 
 ESPN_SCOREBOARD_URL = ("https://site.api.espn.com/apis/site/v2/"
@@ -26,13 +31,21 @@ ESPN_SCOREBOARD_URL = ("https://site.api.espn.com/apis/site/v2/"
 ESPN_SUMMARY_URL = ("https://site.api.espn.com/apis/site/v2/"
                     "sports/football/nfl/summary")
 
-# Box-score group name -> (labels, stat extraction order)
-# Each athlete's stats array aligns 1:1 with the group's labels list.
-GROUP_LABELS = {
-    'passing': ['C/ATT', 'YDS', 'AVG', 'TD', 'INT', 'SACKS', 'RTG'],
-    'rushing': ['CAR', 'YDS', 'AVG', 'TD', 'LONG'],
-    'receiving': ['REC', 'YDS', 'AVG', 'TD', 'LONG', 'TGTS'],
-    'fumbles': ['FUM', 'LOST', 'REC'],
+# Box-score groups and the labels the parser reads from each. Stats are
+# indexed BY LABEL NAME, not position: ESPN appends columns after games go
+# final ('QBR' appeared in the passing row the day after week 1, 2026-09),
+# and a positional prefix check silently zeroed whole groups. A group is
+# only skipped when a REQUIRED label disappears entirely.
+GROUP_REQUIRED_LABELS = {
+    'passing': ['C/ATT', 'YDS', 'TD', 'INT'],
+    'rushing': ['YDS', 'TD'],
+    'receiving': ['REC', 'YDS', 'TD'],
+    'fumbles': ['LOST'],
+    # Return groups carry no DK yardage points, but the TD column does
+    # (6 pts) — and parsing them gives return-only players an explicit
+    # 0-point row so "no recorded actual" means truly not in the box
+    'kickReturns': ['NO', 'TD'],
+    'puntReturns': ['NO', 'TD'],
 }
 
 
@@ -126,7 +139,9 @@ def parse_player_stats(summary):
     """Extract offensive player stat lines -> DK points.
 
     Merges the passing/rushing/receiving/fumbles groups per athlete and
-    computes DK points with nfl_scoring.calculate_offensive_points.
+    computes DK points with nfl_scoring.calculate_offensive_points. Stat
+    cells are looked up by label name, so columns ESPN adds or reorders
+    (the passing row gained 'QBR' post-game) cannot shift the reads.
 
     Returns:
         Dict {norm_name: {'fppg', 'team', 'stats'}} (normalized names)
@@ -136,14 +151,18 @@ def parse_player_stats(summary):
         team_abbr = side.get('team', {}).get('abbreviation')
         for group in side.get('statistics', []):
             name = group.get('name')
-            if name not in GROUP_LABELS:
+            if name not in GROUP_REQUIRED_LABELS:
                 continue
             labels = group.get('labels', [])
-            if labels[:len(GROUP_LABELS[name])] != GROUP_LABELS[name]:
-                # Label order shifted from the verified layout — skip rather
-                # than misread columns (never guess)
-                print(f"    ESPN '{name}' labels changed: {labels} — skipped")
+            missing = [lbl for lbl in GROUP_REQUIRED_LABELS[name]
+                       if lbl not in labels]
+            if missing:
+                # Required label gone — skip rather than guess positions
+                print(f"    ESPN '{name}' labels changed: {labels} "
+                      f"(missing {missing}) — skipped")
                 continue
+            col = {lbl: labels.index(lbl) for lbl in
+                   GROUP_REQUIRED_LABELS[name]}
             for entry in group.get('athletes', []):
                 athlete = entry.get('athlete') or {}
                 display_name = athlete.get('displayName')
@@ -159,24 +178,28 @@ def parse_player_stats(summary):
 
                 if name == 'passing':
                     record['stats']['passing'] = {
-                        'yards': _stat_number(stats, 1),
-                        'tds': _stat_number(stats, 3),
-                        'interceptions': _stat_number(stats, 4),
+                        'yards': _stat_number(stats, col['YDS']),
+                        'tds': _stat_number(stats, col['TD']),
+                        'interceptions': _stat_number(stats, col['INT']),
                     }
                 elif name == 'rushing':
                     record['stats']['rushing'] = {
-                        'yards': _stat_number(stats, 1),
-                        'tds': _stat_number(stats, 3),
+                        'yards': _stat_number(stats, col['YDS']),
+                        'tds': _stat_number(stats, col['TD']),
                     }
                 elif name == 'receiving':
                     record['stats']['receiving'] = {
-                        'receptions': _stat_number(stats, 0),
-                        'yards': _stat_number(stats, 1),
-                        'tds': _stat_number(stats, 3),
+                        'receptions': _stat_number(stats, col['REC']),
+                        'yards': _stat_number(stats, col['YDS']),
+                        'tds': _stat_number(stats, col['TD']),
                     }
                 elif name == 'fumbles':
                     record['stats']['fumbles'] = {
-                        'lost': _stat_number(stats, 1),
+                        'lost': _stat_number(stats, col['LOST']),
+                    }
+                elif name in ('kickReturns', 'puntReturns'):
+                    record['stats'][name] = {
+                        'touchdowns': _stat_number(stats, col['TD']),
                     }
 
     results = {}
@@ -185,6 +208,8 @@ def parse_player_stats(summary):
         rushing = record['stats'].get('rushing', {})
         receiving = record['stats'].get('receiving', {})
         fumbles = record['stats'].get('fumbles', {})
+        kick_returns = record['stats'].get('kickReturns', {})
+        punt_returns = record['stats'].get('puntReturns', {})
         fppg = calculate_offensive_points(
             pass_yards=passing.get('yards', 0),
             pass_tds=passing.get('tds', 0),
@@ -195,11 +220,72 @@ def parse_player_stats(summary):
             rec_yards=receiving.get('yards', 0),
             rec_tds=receiving.get('tds', 0),
             fumbles_lost=fumbles.get('lost', 0),
+            return_tds=(kick_returns.get('touchdowns', 0)
+                        + punt_returns.get('touchdowns', 0)),
         )
         key = normalize_name(record['name'])
         if key:
             results[key] = {'fppg': fppg, 'team': record['team'],
                             'stats': record['stats']}
+    return results
+
+
+# Scoring-play text patterns (verified 2026-09 on a live summary):
+# "Andy Borregales 50 Yd Field Goal", "Eli Raridon 2 Yd pass from Drake
+# Maye (Andy Borregales Kick)". Made FGs and XPs are always scoring plays,
+# so kicker points are exact — no distance aggregates needed.
+FG_PLAY = re.compile(r'^(.+?) (\d{1,3}) Yd Field Goal$')
+XP_PLAY = re.compile(r'\(([^()]+) Kick\)$')
+
+
+def parse_kicker_points(summary):
+    """Compute each kicker's DK points from the scoring-plays list.
+
+    Kicker names/teams come from the box-score 'kicking' group (so a kicker
+    who made nothing still gets a 0-point row — they played); points come
+    from summary['scoringPlays'], which carries every made field goal with
+    its distance and every extra point by name.
+
+    Returns:
+        Dict {norm_name: {'fppg', 'team', 'stats'}} (kickers only)
+    """
+    kickers = {}
+    for side in (summary.get('boxscore', {}).get('players') or []):
+        team_abbr = side.get('team', {}).get('abbreviation')
+        for group in side.get('statistics', []):
+            if group.get('name') != 'kicking':
+                continue
+            for entry in group.get('athletes', []):
+                name = (entry.get('athlete') or {}).get('displayName')
+                key = normalize_name(name) if name else ''
+                if key:
+                    kickers.setdefault(
+                        key, {'name': name, 'team': team_abbr,
+                              'field_goals': [], 'extra_points': 0})
+
+    for play in summary.get('scoringPlays') or []:
+        text = (play.get('text') or '').strip()
+        m = FG_PLAY.match(text)
+        if m:
+            key = normalize_name(m.group(1))
+            if key in kickers:
+                kickers[key]['field_goals'].append(int(m.group(2)))
+            continue
+        m = XP_PLAY.search(text)
+        if m:
+            key = normalize_name(m.group(1))
+            if key in kickers:
+                kickers[key]['extra_points'] += 1
+
+    results = {}
+    for key, rec in kickers.items():
+        results[key] = {
+            'fppg': calculate_kicker_points(rec['field_goals'],
+                                             rec['extra_points']),
+            'team': rec['team'],
+            'stats': {'field_goals': sorted(rec['field_goals']),
+                      'extra_points': rec['extra_points']},
+        }
     return results
 
 
@@ -319,6 +405,7 @@ def fetch_slate_results(date_compact, games):
         if not summary:
             continue
         results.update(parse_player_stats(summary))
+        results.update(parse_kicker_points(summary))
         results.update(parse_dst_points(summary))
         print(f"  {wanted[event_id]['away']} @ {wanted[event_id]['home']}: "
               f"{len(results)} players/DSTs accumulated")

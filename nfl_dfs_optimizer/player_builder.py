@@ -15,7 +15,8 @@ Adapted from dfs_lineup_optimizer/player_builder.py:
 
 from pydfs_lineup_optimizer.player import Player as PyDFSPlayer, GameInfo
 
-from projections import normalize_dst_name, normalize_name
+from projections import (get_dff_out_names, get_dff_team_mismatches,
+                         normalize_dst_name, normalize_name)
 
 MIN_SALARY = 300  # DK NFL minimum salary ($300)
 
@@ -47,17 +48,37 @@ def filter_backup_qbs(pool):
     return kept, dropped
 
 
+def _looks_like_dst(name):
+    lowered = (name or '').lower()
+    return 'dst' in lowered or 'defense' in lowered
+
+
 def _exclusion_keys(name):
-    """Both normalization forms of an exclusion name (player + DST)."""
-    return {normalize_name(name), normalize_dst_name(name)}
+    """Normalization forms of a name for exclusion matching.
+
+    Player names match on their full normalized form only; DST entries
+    additionally match on the team-token form ('Patriots DST' ->
+    'patriots'). Last-name tokenization is deliberately NOT used:
+    league-wide injury reports contain e.g. 'Sincere Brown' (LAC), which
+    must never exclude 'A.J. Brown' (NE) from a slate.
+    """
+    keys = {normalize_name(name)}
+    if _looks_like_dst(name):
+        keys.add(normalize_dst_name(name))
+    return keys
 
 
 def exclude_named_players(pool, exclude):
-    """Drop players whose (normalized) name is in the exclude list.
+    """Drop players matching the exclusion list.
 
     Args:
-        exclude: Iterable of names, or one comma-separated string
-            ("Tommy DeVito, Seahawks DST")
+        exclude: One of
+            - a comma-separated string of names (manual --exclude):
+              "Tommy DeVito, Seahawks DST"
+            - a list of names
+            - a list of (name, team) tuples — team-qualified entries from
+              the DFF injury report: the name must match AND the team must
+              match (players with the same name exist across teams)
 
     Returns:
         (kept, dropped) pool entries
@@ -65,15 +86,77 @@ def exclude_named_players(pool, exclude):
     if isinstance(exclude, str):
         exclude = [n.strip() for n in exclude.split(',') if n.strip()]
 
-    keys = set()
-    for name in exclude or []:
-        keys |= _exclusion_keys(name)
+    entries = []
+    for item in exclude or []:
+        if isinstance(item, (tuple, list)) and len(item) == 2 and item[1]:
+            entries.append((item[0], str(item[1]).strip().upper()))
+        else:
+            entries.append((item, None))
 
     kept, dropped = [], []
-    for entry in pool:
-        player_keys = _exclusion_keys(entry['name'])
-        (dropped if player_keys & keys else kept).append(entry)
+    for player in pool:
+        player_keys = _exclusion_keys(player['name'])
+        player_team = (player.get('team') or '').strip().upper()
+        hit = False
+        for name, team in entries:
+            if not _exclusion_keys(name) & player_keys:
+                continue
+            if team and team != player_team:
+                continue  # same name on a different team
+            hit = True
+            break
+        (dropped if hit else kept).append(player)
     return kept, dropped
+
+
+def merge_exclusions(manual_exclude, out_entries):
+    """Combine manual --exclude names with auto-detected OUT players.
+
+    Args:
+        manual_exclude: --exclude value (comma-separated string or list)
+            or None
+        out_entries: (name, team) tuples from get_dff_out_names()
+
+    Returns:
+        List of exclusion entries — bare names and (name, team) tuples
+    """
+    merged = []
+    if isinstance(manual_exclude, str):
+        merged += [n.strip() for n in manual_exclude.split(',') if n.strip()]
+    elif manual_exclude:
+        merged += list(manual_exclude)
+    for entry in out_entries or []:
+        if entry not in merged:
+            merged.append(entry)
+    return merged
+
+
+def build_auto_exclusions(players, manual_exclude=None, allow_scrape=True):
+    """Combine every pool-level exclusion into one list.
+
+    Layers (all flow through exclude_named_players, so OUT/mismatch entries
+    are team-qualified while manual names match every team):
+        1. manual --exclude names, if any
+        2. DFF injury report: players listed OUT/IR/SUSP
+        3. Traded players: DK slate entries DFF now lists under a different
+           team (DK draftables lag roster moves — the player cannot appear
+           in the slate's games)
+
+    Args:
+        players: Normalized DK draftable dicts (name, team, positions) — the
+            team-mismatch layer needs the slate's own team assignments
+        manual_exclude: --exclude value (comma-separated string or list)
+        allow_scrape: Whether DFF may be scraped if no cache exists yet
+
+    Returns:
+        List of exclusion entries for build_player_pool(exclude=...)
+    """
+    merged = merge_exclusions(
+        manual_exclude, get_dff_out_names(allow_scrape=allow_scrape))
+    for entry in get_dff_team_mismatches(players, allow_scrape=allow_scrape):
+        if entry not in merged:
+            merged.append(entry)
+    return merged
 
 
 def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
@@ -87,8 +170,10 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
         min_salary: Minimum salary to include (default $300, DK NFL minimum)
         drop_backup_qbs: Keep only each team's top-salaried QB (default
             True — DK salaries flag the starter)
-        exclude: Player names to drop from every lineup (list or one
-            comma-separated string), for manual backup/depth exclusions
+        exclude: Players to drop from every lineup — names (list or one
+            comma-separated string) for manual exclusions, or (name, team)
+            tuples for team-qualified injury exclusions (see
+            exclude_named_players)
         verbose: Print what the filters dropped (disable for repeated
             per-source pool builds so the note prints once)
 

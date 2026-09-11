@@ -65,7 +65,7 @@ Output is printed and saved to `nfl_dfs_optimizer/output/` (gitignored). The acc
 | `--week` | N | — | Week number passed to projection scrapers |
 | `--no-scrape` | flag | — | Skip web scrapers (CSV + salary fallback only) |
 | `--no-dst-captain` | flag | — | Showdown: forbid DST as captain |
-| `--exclude` | comma-separated names | — | Drop specific players from ALL lineups (manual backup/depth/injury exclusions) |
+| `--exclude` | comma-separated names | — | Drop specific players from ALL lineups (manual backup/depth exclusions; DFF-listed OUT players are already auto-excluded) |
 | `--keep-backup-qbs` | flag | off | Opt OUT of the backup-QB filter. By default only each team's top-salaried QB stays in the pool (DK prices starters well above backups; draftables have no depth-chart flag) |
 | `--compare` | flag | — | Build one optimal lineup per projection source and print side-by-side overlap/differences (see below) |
 
@@ -75,10 +75,12 @@ Every player always ends up with a projection; the source is labeled per player:
 
 1. **Manual CSV** (`--csv`) — columns `name`/`player` + `points`/`proj` (see `sample_projections.csv`). Optional `team` column sharpens matching.
 2. **DailyFantasyFuel scrape** — server-rendered projection table (`dailyfantasyfuel.com/nfl/projections/`), verified working (2026-09). Column indexes are read from the table header (tolerates reordering); injury tags ("Ja'Marr Chase Q") are stripped from names; `$8.0k` salaries and DST rows (mascot-only names, e.g. "Jaguars") are handled. Parser is frozen against `tests/fixtures/dff_projections.html`.
-3. **BlueCollarDFS scrape** (best-effort stub) — the optimizer is JS-rendered behind a login and its projections/API are premium-gated, so the fetcher parses nothing today. It stays registered so it slots in automatically if a public endpoint appears.
+3. **BlueCollarDFS** — the optimizer page is JS-rendered behind a login (anonymous fetch returns only the site shell), but the site documents a **developer API** (`/api/nfl_draftkings`, premium: key by emailing bluecollardfs@gmail.com, 200 requests/day). The fetcher calls the API when a key is in the `BLUECOLLAR_API_KEY` (or `BCDFS_API_KEY`) environment variable — it then becomes a real projection source and shows up in `--compare` and the accuracy tracker; without a key it degrades to the shell-scraping stub.
 4. **numberFire scrape** (best-effort) — currently parses nothing (JS-rendered), kept as a registry slot.
 5. **FantasyPros scrape** (best-effort) — static pages only serve ~10 rows per position (~50 top names total); JS rendering is Cloudflare-blocked. Trailing team abbreviations ("Jalen Hurts PHI") are stripped; suffixes/punctuation normalized for matching.
 6. **Salary-implied fallback** — crude per-position curve (`proj = salary × slope + floor`), labeled `fallback` and listed in output. Never silent.
+
+**Injury & roster handling:** players DFF lists as **OUT/IR/SUSP** (the board's `data-inj` designation) are excluded from projections *and* from every lineup — pool-level, so salary fallback can't resurrect them. Questionable players stay in. **Traded players** are caught the same way: when DFF's board lists a slate player under a different team than DK's draftables do (DK slates lag roster moves — e.g. after Kayshon Boutte's NE→HOU trade, DK's NE@SEA slate still listed him as a Patriot), the stale DK entry is excluded. Team abbreviations are normalized across sites so convention drift (WSH/WAS) never drops a healthy player. DK's own `is_disabled` flag (set with official inactives) is honored too. Manual exclusions: `--exclude "Name, Name"`.
 
 ## Comparison & accuracy tracking
 
@@ -92,7 +94,7 @@ Two ways external optimizers are used as yardsticks against the in-house project
 - `--score [--contest-id N | --date YYYY-MM-DD]` — fetch actual results via ESPN's hidden JSON API (`game_results.py`), fill actual DK points per player and lineup (showdown captains at 1.5x), print per-source accuracy. Games not yet final are skipped, never fabricated
 - `--history` / `--summary` — saved contests, cumulative per-source accuracy (lineup-level MAE, player-level MAE + bias)
 
-ESPN stat columns are verified against the label list before reading (a shifted layout skips the group loudly rather than misreading); blocked kicks, safeties and two-point conversions are known approximations (ESPN team totals lack them).
+ESPN stat cells are read by label name (ESPN appends box-score columns after games go final — e.g. 'QBR' appeared in the passing row post-game — so positional indexing would silently zero whole groups; a group only skips when a required label vanishes). Kicker points are exact from the scoring-plays list, which carries every made field goal with its distance (the box-score kicking group only has aggregates). Kick/punt-return groups are parsed too: return TDs score 6 DK points (return yardage scores 0), and return-only players get an explicit 0-point row so "no recorded actual" means the player truly didn't appear in the box. Blocked kicks, safeties and two-point conversions remain known approximations (ESPN team totals lack them).
 
 ## Stacking rules (classic)
 
@@ -128,7 +130,7 @@ nfl_dfs_optimizer/
 ├── accuracy_db.py           # SQLite layer for accuracy tracking (nfl_accuracy.db)
 ├── game_results.py          # ESPN hidden API: actual NFL box scores → actual DK points
 ├── sample_projections.csv  # Example manual projection CSV
-└── tests/                   # 134 tests incl. MILP-vs-brute-force cross-check
+└── tests/                   # 180 tests incl. MILP-vs-brute-force cross-check
 ```
 
 ## Notes

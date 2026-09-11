@@ -20,8 +20,9 @@ from datetime import datetime, timezone, timedelta
 from contest_detector import ContestType, detect_contest_type, get_contest_info, display_contest_info
 from dk_client import (fetch_nfl_contests, select_showdown_contest,
                       select_main_slate_contest, fetch_draftables, show_contest_details)
-from player_builder import build_player_pool, build_pydfs_players
-from projections import get_player_projections, display_projection_sources
+from player_builder import (build_player_pool, build_pydfs_players,
+                            build_auto_exclusions)
+from projections import (get_player_projections, display_projection_sources)
 from showdown_optimizer import generate_showdown_lineups, validate_lineup as validate_showdown
 from classic_optimizer import (generate_classic_lineups, lineup_to_dict,
                                 validate_classic_lineup, STACK_RULES)
@@ -133,7 +134,9 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
 
     pool = build_player_pool(draftables, player_projections,
                              drop_backup_qbs=not args.keep_backup_qbs,
-                             exclude=args.exclude)
+                             exclude=build_auto_exclusions(
+                                 draftables, args.exclude,
+                                 allow_scrape=not args.no_scrape))
     display_projection_sources(player_projections, pool)
     print(f"\nPlayer pool: {len(pool)} players "
           f"(deduped, min salary, active only)")

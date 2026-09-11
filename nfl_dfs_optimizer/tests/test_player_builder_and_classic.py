@@ -2,7 +2,8 @@
 
 import pytest
 
-from player_builder import build_player_pool, build_pydfs_players
+from player_builder import (build_auto_exclusions, build_player_pool,
+                            build_pydfs_players)
 from classic_optimizer import (
     generate_classic_lineups, lineup_to_dict, validate_classic_lineup,
 )
@@ -303,3 +304,36 @@ class TestBackupPlayerFilters:
         draftables, projections = self.make_qb_pool()
         pool = build_player_pool(draftables, projections, exclude=None)
         assert 'Rhamondre Stevenson' in {p['name'] for p in pool}
+
+
+class TestBuildAutoExclusions:
+    """build_auto_exclusions: manual + DFF OUT + traded players, one list."""
+
+    def test_combines_all_three_layers(self, monkeypatch):
+        import projections
+        monkeypatch.setattr(projections, '_dff_out_cache',
+                            [('Zach Charbonnet', 'SEA')])
+        monkeypatch.setattr(projections, '_dff_team_cache',
+                            {'kayshon boutte': {'HOU'}})
+        players = [{'name': 'Kayshon Boutte', 'team': 'NE',
+                    'positions': ['WR']}]
+        merged = build_auto_exclusions(players, 'Tommy DeVito')
+        assert 'Tommy DeVito' in merged                # manual --exclude
+        assert ('Zach Charbonnet', 'SEA') in merged    # DFF injury report
+        assert ('Kayshon Boutte', 'NE') in merged      # traded (team mismatch)
+
+    def test_traded_player_dropped_from_pool(self, monkeypatch):
+        import projections
+        monkeypatch.setattr(projections, '_dff_out_cache', [])
+        monkeypatch.setattr(projections, '_dff_team_cache',
+                            {'kayshon boutte': {'HOU'}})
+        draftables = [
+            make_draftable(1, 'Kayshon Boutte', 'WR', 'NE', 5600),
+            make_draftable(2, 'Kenneth Walker', 'RB', 'SEA', 8600),
+        ]
+        exclude = build_auto_exclusions(draftables)
+        pool = build_player_pool(draftables, make_projections([1, 2]),
+                                 drop_backup_qbs=False, exclude=exclude)
+        # The stale NE entry is gone; a real HOU slate entry would have
+        # matched DFF's team and stayed
+        assert {p['name'] for p in pool} == {'Kenneth Walker'}

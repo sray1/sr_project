@@ -13,7 +13,8 @@ Used via:  python analyzer.py --compare [--mode ...] [--csv ...]
 
 from projections import (get_source_projections, FETCHER_REGISTRY,
                          normalize_name)
-from player_builder import build_player_pool, build_pydfs_players
+from player_builder import (build_player_pool, build_pydfs_players,
+                             build_auto_exclusions)
 from showdown_optimizer import generate_showdown_lineups
 from classic_optimizer import generate_classic_lineups, lineup_to_dict
 
@@ -212,11 +213,14 @@ def run_comparison(args, contest, mode, draftables):
         allow_scrape=not args.no_scrape)
 
     # getattr: callers (tests, tracker) may use simpler args namespaces
+    exclude = build_auto_exclusions(
+        draftables, getattr(args, 'exclude', None),
+        allow_scrape=not args.no_scrape)
     lineups_by_source = build_lineups_per_source(
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
         drop_backup_qbs=not getattr(args, 'keep_backup_qbs', False),
-        exclude=getattr(args, 'exclude', None))
+        exclude=exclude)
 
     if not lineups_by_source:
         print("No source produced a feasible lineup — nothing to compare")

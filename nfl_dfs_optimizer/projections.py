@@ -271,6 +271,9 @@ DFF_URL = "https://www.dailyfantasyfuel.com/nfl/projections/"
 
 # Trailing injury-report tokens in player names ("Ja'Marr Chase Q")
 INJURY_TAGS = {'Q', 'D', 'O', 'IR', 'OUT', 'NA', 'P', 'SUSP'}
+# Injury statuses that mean the player will NOT play: excluded from the
+# projections and from every lineup (questionable players stay in)
+OUT_STATUSES = {'O', 'OUT', 'IR', 'SUSP'}
 DFF_SALARY_RE = re.compile(r"\$\s*([\d,]+(?:\.\d+)?)\s*k", re.IGNORECASE)
 
 
@@ -291,20 +294,36 @@ def _parse_dff_projections(html):
 
     Verified layout (2026-09): the page is server-rendered with one <table>;
     each player <tr> holds a mobile card (first <td>, hidden on desktop)
-    followed by desktop cells. Column names come from the detailed thead row
-    (POS/NAME/SALARY/TEAM/OPP/.../'DK FP PROJECTED'), so column order changes
-    are tolerated. The current-slate page is fetched; DFF has no week param.
+    followed by desktop cells, and carries the injury designation in a
+    data-inj attribute ('' / 'Q' / 'D' / 'O'). Column names come from the
+    detailed thead row (POS/NAME/SALARY/TEAM/OPP/.../'DK FP PROJECTED'), so
+    column order changes are tolerated. The current-slate page is fetched;
+    DFF has no week param.
+
+    Players listed OUT/IR/SUSP get NO projection (they will not play) and
+    their (name, team) pairs are returned separately so the lineup pool can
+    exclude them — team-qualified, because the board is league-wide and
+    same-named players exist across teams (salary fallback would otherwise
+    hand them a projection anyway).
+
+    Also returns each player's DFF-listed team (out_entries carry it too, but
+    team-qualified; the team map catches traded players — DK draftables lag
+    roster moves, so a slate entry can reference a player who has since left
+    the team and cannot appear in the slate's games).
 
     Returns:
-        Dict {normalized_name: pts} plus {normalized_name|team: pts} keys,
-        or {} if the layout is unrecognized.
+        (projections, out_entries, team_map) — projections as a dict
+        {normalized_name: pts} plus {normalized_name|team: pts} keys
+        (or ({}, [], {}) if the layout is unrecognized); out_entries as
+        (display_name, team_abbr) tuples of players ruled out; team_map as
+        {normalized_name: set(team_abbrs)} of every listed non-DST row.
     """
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, 'lxml')
     table = soup.find('table')
     if table is None:
-        return {}
+        return {}, [], {}
 
     # Column map from the detailed header row (the one with POS and NAME)
     colmap = {}
@@ -315,9 +334,11 @@ def _parse_dff_projections(html):
             colmap = {h: i for i, h in enumerate(headers)}
             break
     if not colmap:
-        return {}
+        return {}, [], {}
 
     projections = {}
+    out_entries = []
+    team_map = {}
     tbody = table.find('tbody') or table
     for row in tbody.find_all('tr', recursive=False):
         tds = row.find_all('td', recursive=False)
@@ -331,6 +352,21 @@ def _parse_dff_projections(html):
         raw_name = tds[colmap['NAME']].get_text(' ', strip=True)
         team = tds[colmap['TEAM']].get_text(strip=True).upper()
         proj_text = tds[colmap['DK FP PROJECTED']].get_text(strip=True)
+
+        # Record the DFF-listed team for every non-DST row — injured or
+        # not, projected or not. get_dff_team_mismatches() uses it to catch
+        # players DK's draftables still list under a team they've left.
+        norm = (normalize_name(_strip_injury_tag(raw_name) or raw_name)
+                if position != 'DST' else '')
+        if norm and team:
+            team_map.setdefault(norm, set()).add(team)
+
+        injury = (row.get('data-inj') or '').strip().upper()
+        if injury in OUT_STATUSES:
+            entry = (_strip_injury_tag(raw_name) or raw_name.strip(), team)
+            if entry not in out_entries:  # DFF lists some players twice
+                out_entries.append(entry)
+            continue
 
         try:
             proj = float(proj_text)
@@ -353,7 +389,7 @@ def _parse_dff_projections(html):
         if team:
             projections[f"{key}|{team.lower()}"] = proj
 
-    return projections
+    return projections, out_entries, team_map
 
 
 def scrape_dailyfantasyfuel(week=None):
@@ -361,24 +397,121 @@ def scrape_dailyfantasyfuel(week=None):
 
     Verified 2026-09: https://www.dailyfantasyfuel.com/nfl/projections/ is
     server-rendered — the full current-slate player table (~450 rows: name
-    with injury tag, position, salary, team, opponent, projected DK points)
-    is present in the initial HTML with no login. `week` is accepted for
-    registry symmetry but ignored (DFF serves the current slate only).
+    with injury tag, position, salary, team, opponent, projected DK points,
+    data-inj injury designation) is present in the initial HTML with no
+    login. `week` is accepted for registry symmetry but ignored (DFF serves
+    the current slate only).
+
+    Also caches the players DFF lists as OUT/IR/SUSP for
+    get_dff_out_names(), so the pool excludes them from every lineup.
 
     Returns:
         Dict {normalized_name: projected DK points}, or {} on failure.
     """
+    global _dff_out_cache, _dff_team_cache
     print("  Trying DailyFantasyFuel...")
     html = _fetch_html(DFF_URL)
     if not html:
+        _dff_out_cache = []
+        _dff_team_cache = {}
         return {}
 
-    projections = _parse_dff_projections(html)
+    projections, out_entries, team_map = _parse_dff_projections(html)
+    _dff_out_cache = out_entries
+    _dff_team_cache = team_map
     if not projections:
         print("    DailyFantasyFuel: no projections parsed (page layout changed)")
     else:
         print(f"    DailyFantasyFuel: {len(projections)} projections")
+        if out_entries:
+            shown = ', '.join(n for n, _ in out_entries[:6])
+            more = (f' (+{len(out_entries) - 6} more)'
+                    if len(out_entries) > 6 else '')
+            print(f"    DailyFantasyFuel injury report: {len(out_entries)} "
+                  f"listed OUT/IR (excluded): {shown}{more}")
     return projections
+
+
+# Players DFF lists as OUT/IR/SUSP from the last scrape (None = never
+# scraped; [] = scraped but none/failed). Module cache so the pool can
+# exclude them without a second fetch.
+_dff_out_cache = None
+
+
+def get_dff_out_names(allow_scrape=True):
+    """Players DFF lists as OUT/IR/SUSP on the current slate.
+
+    Uses the cache from the last DailyFantasyFuel scrape; scrapes once if
+    none has run yet (so a CSV-first pipeline still gets the injury list).
+    Returns [] when DFF is unavailable — never blocks lineup building.
+
+    Returns:
+        List of (name, team_abbr) tuples, team-qualified for exclusion
+        matching (same-named players exist across teams).
+    """
+    if _dff_out_cache is None and allow_scrape:
+        scrape_dailyfantasyfuel()
+    return list(_dff_out_cache or [])
+
+
+# Each player's DFF-listed teams from the last scrape ({norm_name: set(abbrs)};
+# None = never scraped; {} = scraped but none/failed). Same fetch as
+# _dff_out_cache — the caches fill together.
+_dff_team_cache = None
+
+
+# Team-abbreviation aliases across sites (DFF currently matches DK's set —
+# verified 2026-09 — but a mismatch EXCLUDES a player, so equivalent
+# spellings must never compare unequal; same lesson as the A.J. Brown
+# name-token bug: convention drift must not silently drop players).
+TEAM_ABBR_ALIASES = {
+    'WSH': 'WAS', 'JAC': 'JAX', 'LA': 'LAR', 'SD': 'LAC', 'OAK': 'LV',
+}
+
+
+def _norm_team_abbr(team):
+    return TEAM_ABBR_ALIASES.get((team or '').strip().upper(),
+                                 (team or '').strip().upper())
+
+
+def get_dff_team_mismatches(players, allow_scrape=True):
+    """Slate players DFF now lists under a team DK does not show them on.
+
+    DK draftables lag real-world roster moves (verified 2026-09: after
+    Kayshon Boutte was traded NE->HOU, DK's NE@SEA slate still listed him
+    as a Patriot while DFF's board already carried him under HOU with a
+    fresh projection). Such a player cannot appear in the slate's games —
+    callers exclude them from the pool like OUT players (bare-name
+    matching would otherwise still hand them DFF's projection).
+
+    Only names DFF explicitly lists under another team are flagged: if DFF
+    shows the player on ANY of the DK team(s) seen for that name, no flag
+    (covers two same-named players on different teams).
+
+    Args:
+        players: Normalized DK draftable dicts (name, team, positions)
+        allow_scrape: Scrape DFF once if no cache exists yet
+
+    Returns:
+        List of (display_name, dk_team) tuples — the stale DK slate entries.
+    """
+    if _dff_team_cache is None and allow_scrape:
+        scrape_dailyfantasyfuel()
+    dff_teams = _dff_team_cache or {}
+
+    mismatches = []
+    for player in players:
+        if 'DST' in (player.get('positions') or []):
+            continue
+        dk_team = _norm_team_abbr(player.get('team'))
+        if not dk_team:
+            continue  # no DK team to compare against
+        dff_team_set = dff_teams.get(normalize_name(player.get('name') or ''))
+        if not dff_team_set:
+            continue  # not on DFF's board — nothing to compare
+        if dk_team not in {_norm_team_abbr(t) for t in dff_team_set}:
+            mismatches.append((player['name'], player.get('team')))
+    return mismatches
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +519,88 @@ def scrape_dailyfantasyfuel(week=None):
 # ---------------------------------------------------------------------------
 
 BLUECOLLAR_URL = "https://bluecollardfs.com/nfl-optimizer"
+# Documented developer API (bluecollardfs.com/developers): premium-gated
+# (key by email, 200 requests/day) but the exact shape we need — slates of
+# {name, team, position, opponent, projection, salary, value} string fields.
+BLUECOLLAR_API_URL = "https://bluecollardfs.com/api/nfl_draftkings"
+
+
+def _parse_bluecollar_api(data):
+    """Parse BlueCollarDFS developer-API JSON into projection keys.
+
+    Verified shape (2026-09, bluecollardfs.com/developers): every value is a
+    STRING — {'slates': [{'slate': 'Main', 'slate_type': 'classic',
+    'info': [{'name', 'team', 'position', 'opponent', 'projection',
+    'salary', 'value'}]}]}.
+
+    Returns:
+        Dict {normalized_name: pts} plus {normalized_name|team: pts} keys
+    """
+    projections = {}
+    for slate in data.get('slates') or []:
+        for entry in slate.get('info') or []:
+            name = entry.get('name')
+            try:
+                pts = float(entry.get('projection'))
+            except (TypeError, ValueError):
+                continue
+            if not name or math.isnan(pts):
+                continue
+            team = entry.get('team') or ''
+            if (entry.get('position') or '').upper() == 'DST':
+                key = normalize_dst_name(name)
+                if key:
+                    projections[key] = pts
+            else:
+                key = normalize_name(name)
+                if key:
+                    projections[key] = pts
+                    if team:
+                        projections[f"{key}|{team.lower()}"] = pts
+    return projections
+
+
+def fetch_bluecollar_api(timeout=15):
+    """Call the BlueCollarDFS NFL DraftKings API if a key is configured.
+
+    The key lives in the BLUECOLLAR_API_KEY (or BCDFS_API_KEY) environment
+    variable — premium-gated, obtained by emailing bluecollardfs@gmail.com
+    (bluecollardfs.com/developers). No key configured -> (None, None), so
+    the HTML-shell fallback runs instead.
+
+    Returns:
+        Parsed projections dict, or ({}, None) on no-key, or ({}, status)
+        on an HTTP error (401 bad key / 403 no sport access / 429 limit).
+    """
+    import os
+
+    key = (os.environ.get('BLUECOLLAR_API_KEY')
+           or os.environ.get('BCDFS_API_KEY'))
+    if not key:
+        return None, None
+    try:
+        resp = requests.get(
+            BLUECOLLAR_API_URL,
+            headers={'User-Agent': 'Mozilla/5.0',
+                     'Authorization': f'ApiKey {key}'},
+            timeout=timeout)
+    except requests.RequestException as e:
+        print(f"    BlueCollarDFS API request failed: {e}")
+        return {}, None
+    if resp.status_code != 200:
+        detail = ''
+        try:
+            detail = resp.json().get('error') or ''
+        except ValueError:
+            pass
+        print(f"    BlueCollarDFS API: HTTP {resp.status_code}"
+              f"{' - ' + detail if detail else ''} — no projections")
+        return {}, resp.status_code
+    try:
+        return _parse_bluecollar_api(resp.json()), 200
+    except ValueError as e:
+        print(f"    BlueCollarDFS API: bad JSON ({e})")
+        return {}, None
 
 
 def _parse_bluecollar_projections(html):
@@ -426,18 +641,28 @@ def _parse_bluecollar_projections(html):
 
 
 def scrape_bluecollar(week=None):
-    """Scrape BlueCollarDFS NFL projections (best-effort stub).
+    """Scrape BlueCollarDFS NFL projections (API first, HTML shell second).
 
     Verified 2026-09: the optimizer page is JS-rendered behind a login and
-    projections/CSV/API access are premium features, so an anonymous fetch
-    returns only the site shell. Kept as a registry slot per the
-    horse_race_predictor pattern: if a public endpoint appears or credentials
-    are wired in, it slots in without touching the pipeline.
+    projections are premium-gated — an anonymous fetch returns only the site
+    shell. The site DOES document a developer API (bluecollardfs.com/
+    developers, premium key by email, 200 requests/day): when a key is in
+    BLUECOLLAR_API_KEY / BCDFS_API_KEY, this fetcher calls it and becomes a
+    real projection source; without one, the HTML fallback stays a stub.
 
     Returns:
         Dict {normalized_name: projected DK points}, or {} on failure.
     """
     print("  Trying BlueCollarDFS...")
+    projections, status = fetch_bluecollar_api()
+    if status == 200 and projections:
+        print(f"    BlueCollarDFS API: {len(projections)} projections")
+        return projections
+    if status == 200 and not projections:
+        print("    BlueCollarDFS API: no slates parsed")
+        return {}
+
+    # No key configured (or the call failed) — anonymous HTML shell
     html = _fetch_html(BLUECOLLAR_URL)
     if not html:
         return {}

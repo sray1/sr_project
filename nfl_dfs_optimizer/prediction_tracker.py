@@ -24,7 +24,7 @@ import accuracy_db as db
 from analyzer import prepare_contest
 from comparison import build_lineups_per_source
 from game_results import fetch_slate_results
-from player_builder import build_player_pool
+from player_builder import build_auto_exclusions, build_player_pool
 from projections import (get_source_projections, normalize_dst_name,
                          normalize_name)
 
@@ -41,7 +41,9 @@ def save_snapshot(args):
         draftables, csv_path=args.csv, week=args.week,
         allow_scrape=not args.no_scrape)
     drop_backup_qbs = not getattr(args, 'keep_backup_qbs', False)
-    exclude = getattr(args, 'exclude', None)
+    exclude = build_auto_exclusions(
+        draftables, getattr(args, 'exclude', None),
+        allow_scrape=not args.no_scrape)
     lineups_by_source = build_lineups_per_source(
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
