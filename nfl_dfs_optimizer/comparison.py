@@ -232,4 +232,18 @@ def run_comparison(args, contest, mode, draftables):
         baseline = next(iter(lineups_by_source))
     print_comparison(lineups_by_source, source_projections, mode, baseline,
                      draftables)
+
+    # Expert published lineup (classic slates only): Stokastic's cheat
+    # sheet publishes a fully-worked lineup — shown alongside the
+    # per-source optimal builds, but kept out of the comparison table
+    # (it has no per-player projections to compare)
+    if mode == 'classic' and not getattr(args, 'no_scrape', False):
+        from expert_lineups import (fetch_stokastic_lineup,
+                                     print_expert_lineup)
+        expert = fetch_stokastic_lineup(
+            draftables, week=getattr(args, 'week', None),
+            starts_at=contest.starts_at)
+        if expert:
+            print_expert_lineup(expert)
+
     return lineups_by_source

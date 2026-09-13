@@ -89,6 +89,8 @@ Two ways external optimizers are used as yardsticks against the in-house project
 
 **Pre-game side-by-side (`analyzer.py --compare`)** — builds one optimal lineup *per projection source* (CSV, DailyFantasyFuel, FantasyPros, salary fallback — every registered source runs through the exact same optimizer, not their finished lineups which aren't scrapeable), then prints each lineup with its projections, roster overlap % vs the baseline (default pipeline) lineup, unique picks, and captain agreement.
 
+**Expert published lineups (classic slates)** — Stokastic's weekly DK cheat sheet (`draftkings-nfl-dfs-cheat-sheet-week-{N}`) is the one free source publishing a complete worked classic lineup. It's parsed from the article's "Worked Example" numbered list (prose mentions of non-rostered players with salaries — e.g. "Tee Higgins ($6,300) ... the reason he is out is price" — are excluded by keeping only the contiguous pick run per list item) and **validated against the contest's own draftables** before use: exactly 9 distinct slate players, every stated salary matches DK's, the roster is a legal classic lineup, and the total matches the article's stated figure. Any failure skips the lineup with a note — nothing is ever fabricated. It appears in `--compare` output and is saved under source `stokastic` by `prediction_tracker.py --save` (classic contests), graded post-game like any other lineup. Frozen against `tests/fixtures/stokastic_week1.html`.
+
 **Post-game accuracy tracking (`prediction_tracker.py`)** — mirrors the NBA `dfs_lineup_optimizer/prediction_tracker.py` pattern:
 
 - `--save [--contest-id N]` — pre-game snapshot: per-source player projections + each source's optimal lineup into `nfl_accuracy.db` (idempotent per contest)
@@ -127,11 +129,12 @@ nfl_dfs_optimizer/
 ├── showdown_optimizer.py    # Pulp MILP: CPT + 5 FLEX, cap, team-max, top-N diversity
 ├── classic_optimizer.py     # pydfs DK Football + stacking rules, lineup validation
 ├── comparison.py            # --compare: one optimal lineup per source, overlap report
+├── expert_lineups.py         # Stokastic weekly cheat sheet: parsed + validated expert lineup
 ├── prediction_tracker.py    # Pre-game snapshot --save, post-game --score/--history/--summary
 ├── accuracy_db.py           # SQLite layer for accuracy tracking (nfl_accuracy.db)
 ├── game_results.py          # ESPN hidden API: actual NFL box scores → actual DK points
 ├── sample_projections.csv  # Example manual projection CSV
-└── tests/                   # 191 tests incl. MILP-vs-brute-force cross-check
+└── tests/                   # 215 tests incl. MILP-vs-brute-force cross-check
 ```
 
 ## Notes

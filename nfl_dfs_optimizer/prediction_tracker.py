@@ -23,6 +23,7 @@ from datetime import datetime, timezone, timedelta
 import accuracy_db as db
 from analyzer import prepare_contest
 from comparison import build_lineups_per_source
+from expert_lineups import fetch_stokastic_lineup, print_expert_lineup
 from game_results import fetch_slate_results
 from player_builder import build_auto_exclusions, build_player_pool
 from projections import (get_source_projections, normalize_dst_name,
@@ -72,6 +73,18 @@ def save_snapshot(args):
 
     for source, lineup in lineups_by_source.items():
         db.save_lineup_prediction(contest.contest_id, source, mode, lineup)
+
+    # Expert published lineup (classic slates only): Stokastic's weekly
+    # cheat sheet publishes a fully-worked lineup — a roster-construction
+    # yardstick, graded alongside the projection sources. Its players get
+    # scored by normalized name like any other lineup.
+    if mode == 'classic' and not args.no_scrape:
+        expert = fetch_stokastic_lineup(draftables, week=args.week,
+                                         starts_at=contest.starts_at)
+        if expert:
+            db.save_lineup_prediction(contest.contest_id, 'stokastic',
+                                      mode, expert)
+            print_expert_lineup(expert)
 
     print(f"\nSaved snapshot: {len(lineups_by_source)} sources, "
           f"{n_rows} projection rows, {len(slate_games)} slate games")
