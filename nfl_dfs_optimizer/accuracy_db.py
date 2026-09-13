@@ -94,6 +94,17 @@ def init_db():
             ON source_projections (contest_id, norm_name)
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS hindsight_optimals (
+            contest_id INTEGER PRIMARY KEY,
+            mode TEXT NOT NULL,
+            players_json TEXT NOT NULL,
+            total_actual REAL NOT NULL,
+            total_salary INTEGER NOT NULL,
+            computed_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -231,6 +242,57 @@ def save_lineup_prediction(contest_id, source, mode, lineup, lineup_rank=1):
           lineup['total_salary']))
     conn.commit()
     conn.close()
+
+
+def save_hindsight_lineup(contest_id, mode, lineup, total_actual):
+    """Store the hindsight-optimal lineup for a contest (its benchmark).
+
+    Kept in its own table, NOT lineup_predictions: it's what every
+    prediction is measured against, not a prediction itself (adding it as
+    a source would pollute --summary's per-source accuracy). Idempotent
+    per contest — recomputation replaces the row.
+
+    Args:
+        contest_id: Contest the lineup was optimal for
+        mode: 'showdown' or 'classic'
+        lineup: lineup_to_dict-shaped lineup whose per-player 'projection'
+            values ARE the actual DK points
+        total_actual: The lineup's total actual points (== the optimizer
+            objective when computed from graded actuals)
+    """
+    players = [{'name': p['name'], 'salary': p['salary'],
+                'actual': p.get('projection'), 'is_captain': False}
+               for p in lineup['players']]
+    computed_at = datetime.now().isoformat()
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO hindsight_optimals (contest_id, mode, players_json,
+            total_actual, total_salary, computed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(contest_id) DO UPDATE SET
+            mode = excluded.mode,
+            players_json = excluded.players_json,
+            total_actual = excluded.total_actual,
+            total_salary = excluded.total_salary,
+            computed_at = excluded.computed_at
+    """, (contest_id, mode, json.dumps(players), total_actual,
+          lineup['total_salary'], computed_at))
+    conn.commit()
+    conn.close()
+
+
+def get_hindsight_lineup(contest_id):
+    """Fetch the stored hindsight-optimal lineup for a contest (or None)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM hindsight_optimals WHERE contest_id = ?",
+        (contest_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    row = dict(row)
+    row['players'] = json.loads(row.pop('players_json'))
+    return row
 
 
 def record_player_actuals(contest_id, player_scores):

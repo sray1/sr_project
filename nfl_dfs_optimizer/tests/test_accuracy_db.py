@@ -24,6 +24,51 @@ def make_pool_player(pid, name, position, team, salary, projection,
     }
 
 
+def make_hindsight_lineup():
+    return {
+        'players': [
+            {'name': 'Bryce Young', 'lineup_position': 'QB',
+             'positions': ['QB'], 'team': 'CAR', 'salary': 5200,
+             'projection': 35.44, 'opponent': None},
+            {'name': 'Derrick Henry', 'lineup_position': 'RB',
+             'positions': ['RB'], 'team': 'BAL', 'salary': 6700,
+             'projection': 38.3, 'opponent': None},
+        ],
+        'total_projection': 73.74,
+        'total_salary': 11900,
+    }
+
+
+class TestHindsightLineups:
+    def test_save_and_fetch(self, temp_db):
+        temp_db.save_contest(1, 2, 'Week 1 Classic', 'classic', ['KC @ BAL'])
+        lineup = make_hindsight_lineup()
+        temp_db.save_hindsight_lineup(1, 'classic', lineup, 73.74)
+        row = temp_db.get_hindsight_lineup(1)
+        assert row['total_actual'] == 73.74
+        assert row['total_salary'] == 11900
+        assert row['mode'] == 'classic'
+        assert row['computed_at']
+        assert [p['name'] for p in row['players']] == \
+            ['Bryce Young', 'Derrick Henry']
+        assert row['players'][0]['actual'] == 35.44
+
+    def test_save_is_upsert(self, temp_db):
+        temp_db.save_contest(1, 2, 'Week 1 Classic', 'classic', ['KC @ BAL'])
+        temp_db.save_hindsight_lineup(1, 'classic',
+                                      make_hindsight_lineup(), 73.74)
+        lineup = make_hindsight_lineup()
+        lineup['total_projection'] = 99.0
+        temp_db.save_hindsight_lineup(1, 'classic', lineup, 99.0)
+        rows = temp_db.get_connection().execute(
+            'SELECT COUNT(*) AS n FROM hindsight_optimals').fetchone()
+        assert rows['n'] == 1  # recomputation replaces, never duplicates
+        assert temp_db.get_hindsight_lineup(1)['total_actual'] == 99.0
+
+    def test_missing_contest_returns_none(self, temp_db):
+        assert temp_db.get_hindsight_lineup(999) is None
+
+
 class TestSchema:
     def test_init_creates_tables(self, temp_db):
         conn = temp_db.get_connection()
