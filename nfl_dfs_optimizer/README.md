@@ -67,6 +67,7 @@ Output is printed and saved to `nfl_dfs_optimizer/output/` (gitignored). The acc
 | `--no-dst-captain` | flag | — | Showdown: forbid DST as captain |
 | `--exclude` | comma-separated names | — | Drop specific players from ALL lineups (manual backup/depth exclusions; DFF-listed OUT players are already auto-excluded) |
 | `--keep-backup-qbs` | flag | off | Opt OUT of the backup-QB filter. By default only each team's top-salaried QB stays in the pool (DK prices starters well above backups; draftables have no depth-chart flag) |
+| `--keep-deep-wrs` | flag | off | Opt OUT of the deep-WR filter. By default WRs no projection source lists (fallback-only) are dropped from the pool — practice squad / WR4+ players DK still shows on the slate get fantasy-relevant projections from real boards, and injury risers get projected once promoted, so unlisted = ghost |
 | `--compare` | flag | — | Build one optimal lineup per projection source and print side-by-side overlap/differences (see below) |
 
 ## Projection sources (priority order)
@@ -80,7 +81,7 @@ Every player always ends up with a projection; the source is labeled per player:
 5. **FantasyPros scrape** (best-effort) — static pages only serve ~10 rows per position (~50 top names total); JS rendering is Cloudflare-blocked. Trailing team abbreviations ("Jalen Hurts PHI") are stripped; suffixes/punctuation normalized for matching.
 6. **Salary-implied fallback** — crude per-position curve (`proj = salary × slope + floor`), labeled `fallback` and listed in output. Never silent.
 
-**Injury & roster handling:** players DFF lists as **OUT/IR/SUSP** (the board's `data-inj` designation) are excluded from projections *and* from every lineup — pool-level, so salary fallback can't resurrect them. Questionable players stay in. **Traded players** are caught the same way: when DFF's board lists a slate player under a different team than DK's draftables do (DK slates lag roster moves — e.g. after Kayshon Boutte's NE→HOU trade, DK's NE@SEA slate still listed him as a Patriot), the stale DK entry is excluded. Team abbreviations are normalized across sites so convention drift (WSH/WAS) never drops a healthy player. DK's own `is_disabled` flag (set with official inactives) is honored too. Manual exclusions: `--exclude "Name, Name"`.
+**Injury & roster handling:** players DFF lists as **OUT/IR/SUSP** (the board's `data-inj` designation) are excluded from projections *and* from every lineup — pool-level, so salary fallback can't resurrect them. Questionable players stay in. **Traded players** are caught the same way: when DFF's board lists a slate player under a different team than DK's draftables do (DK slates lag roster moves — e.g. after Kayshon Boutte's NE→HOU trade, DK's NE@SEA slate still listed him as a Patriot), the stale DK entry is excluded. Team abbreviations are normalized across sites so convention drift (WSH/WAS) never drops a healthy player. DK's own injury data is honored too: the raw draftables payload carries a `status` field (`OUT`/`IR`/`Q`/`D`) that flags OUT and IR players days before the `is_disabled` flag flips with official inactives (~90 min pre-lock) — every player DK itself marks **OUT or IR is always dropped** (Q/D stay in; DFF's injury board lags it, e.g. week 1 IR players Savion Williams and Jordyn Tyson had no DFF tag). **Deep-WR filter** (default on, `--keep-deep-wrs` to opt out): WRs whose projection is salary-fallback — no board (CSV/DFF/FantasyPros/BlueCollar) lists them — are dropped from the pool; DK slates still list practice-squad signings and the salary curve otherwise hands them fantasy-relevant projections (the Saints' Kyrese Rowan, a Sept 9 practice-squad signing, was being picked at $3,000 over real WRs). Injury risers stay, since boards project promoted players. Manual exclusions: `--exclude "Name, Name"`.
 
 ## Comparison & accuracy tracking
 
@@ -130,7 +131,7 @@ nfl_dfs_optimizer/
 ├── accuracy_db.py           # SQLite layer for accuracy tracking (nfl_accuracy.db)
 ├── game_results.py          # ESPN hidden API: actual NFL box scores → actual DK points
 ├── sample_projections.csv  # Example manual projection CSV
-└── tests/                   # 180 tests incl. MILP-vs-brute-force cross-check
+└── tests/                   # 191 tests incl. MILP-vs-brute-force cross-check
 ```
 
 ## Notes

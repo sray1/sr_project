@@ -9,11 +9,16 @@ Best-effort fetch layer over the unofficial `draft_kings` client:
 
 from datetime import datetime, timezone, timedelta
 
+import requests
+
 from draft_kings import Sport
 from contest_detector import ContestType, detect_contest_type, is_main_slate, get_contest_info, display_contest_info
 from utils import get_draftkings_client
 
 ET = timezone(timedelta(hours=-5))
+
+DK_DRAFTABLES_URL = ("https://api.draftkings.com/draftgroups/v1/"
+                     "draftgroups/{draft_group_id}/draftables")
 
 
 def fetch_nfl_contests():
@@ -142,6 +147,12 @@ def select_main_slate_contest(contests=None):
 def fetch_draftables(draft_group_id):
     """Fetch and normalize draftable players for a draft group.
 
+    Fetched from the raw draftables endpoint, not the `draft_kings`
+    client: the client drops DK's own injury `status` field (OUT/IR/Q/D),
+    which flags IR and OUT players days before `isDisabled` flips
+    (~90 min pre-lock) — Jordyn Tyson sat in the pool at $5,100 with DK's
+    payload already saying 'IR'.
+
     DK showdown slates list each player twice (CPT at 1.5x salary, base
     UTIL/FLEX entry); classic slates list each player once per position slot.
     Normalization here keeps raw entries; dedup happens in player_builder.
@@ -152,32 +163,48 @@ def fetch_draftables(draft_group_id):
     Returns:
         List of player dicts:
             {player_id, name, position, positions, salary, team, game,
-             game_start, is_disabled}
+             game_start, is_disabled, status}
+            status: 'OUT'/'IR'/'Q'/'D' or '' (DK reports 'None')
     """
-    client = get_draftkings_client()
-    response = client.draftables(draft_group_id)
-    players = response.players or []
+    url = DK_DRAFTABLES_URL.format(draft_group_id=draft_group_id)
+    try:
+        response = requests.get(url, timeout=20,
+                               headers={'User-Agent': 'Mozilla/5.0'})
+        response.raise_for_status()
+        entries = response.json().get('draftables') or []
+    except (requests.RequestException, ValueError) as e:
+        print(f"  Draftables fetch failed: {e}")
+        return []
 
     normalized = []
-    for player in players:
-        positions = (player.position_name or '').split('/')
+    for entry in entries:
+        competition = (entry.get('competition')
+                       or (entry.get('competitions') or [{}])[0])
 
-        game = None
         game_start = None
-        if player.competition_details:
-            game = player.competition_details.name
-            game_start = player.competition_details.starts_at
+        raw_start = competition.get('startTime')
+        if raw_start:
+            try:
+                game_start = datetime.fromisoformat(
+                    raw_start.replace('Z', '+00:00'))
+            except ValueError:
+                pass
+
+        status = (entry.get('status') or '').strip().upper()
+        if status == 'NONE':
+            status = ''
 
         normalized.append({
-            'player_id': player.player_id,
-            'name': player.name_details.display if player.name_details else None,
-            'position': player.position_name,
-            'positions': positions,
-            'salary': player.salary,
-            'team': player.team_details.abbreviation if player.team_details else None,
-            'game': game,
+            'player_id': entry.get('playerId'),
+            'name': entry.get('displayName'),
+            'position': entry.get('position'),
+            'positions': (entry.get('position') or '').split('/'),
+            'salary': entry.get('salary'),
+            'team': entry.get('teamAbbreviation'),
+            'game': competition.get('name'),
             'game_start': game_start,
-            'is_disabled': bool(player.is_disabled),
+            'is_disabled': bool(entry.get('isDisabled')),
+            'status': status,
         })
 
     return normalized

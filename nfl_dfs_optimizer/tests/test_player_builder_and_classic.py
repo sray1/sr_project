@@ -306,7 +306,74 @@ class TestBackupPlayerFilters:
         assert 'Rhamondre Stevenson' in {p['name'] for p in pool}
 
 
-class TestBuildAutoExclusions:
+class TestFilterUnprojectedWRs:
+    """Deep-WR filter: WRs no projection source lists are practice-squad /
+    WR4+ / injured ghosts the salary fallback overrates (Kyrese Rowan)."""
+
+    def make_wr_pool(self):
+        projections = {
+            1: {'projection': 12.0, 'source': 'dailyfantasyfuel'},
+            2: {'projection': 8.3, 'source': 'fallback'},
+            3: {'projection': 4.0, 'source': 'fallback'},   # fallback RB
+            4: {'projection': 5.0, 'source': 'fallback'},   # fallback TE
+            5: {'projection': 9.0, 'source': 'fantasypros'},
+        }
+        draftables = [
+            make_draftable(1, 'Projected WR', 'WR', 'KC', 8000),
+            make_draftable(2, 'Kyrese Rowan', 'WR', 'NO', 3000),
+            make_draftable(3, 'Deep RB', 'RB', 'KC', 3000),
+            make_draftable(4, 'Deep TE', 'TE', 'KC', 3000),
+            make_draftable(5, 'FantasyPros WR', 'WR', 'KC', 6000),
+        ]
+        return build_player_pool(draftables, projections,
+                                 drop_backup_qbs=False)
+
+    def test_drops_only_fallback_wrs(self):
+        from player_builder import filter_unprojected_wrs
+        kept, dropped = filter_unprojected_wrs(self.make_wr_pool())
+        assert [p['name'] for p in dropped] == ['Kyrese Rowan']
+        assert {p['name'] for p in kept} == {'Projected WR', 'Deep RB',
+                                             'Deep TE', 'FantasyPros WR'}
+
+    def test_pool_param_applies_filter(self):
+        projections = {
+            1: {'projection': 12.0, 'source': 'dailyfantasyfuel'},
+            2: {'projection': 8.3, 'source': 'fallback'},
+            3: {'projection': 4.0, 'source': 'fallback'},
+        }
+        draftables = [
+            make_draftable(1, 'Projected WR', 'WR', 'KC', 8000),
+            make_draftable(2, 'Kyrese Rowan', 'WR', 'NO', 3000),
+            make_draftable(3, 'Deep RB', 'RB', 'KC', 3000),
+        ]
+        pool = build_player_pool(draftables, projections,
+                                 drop_backup_qbs=False,
+                                 drop_unprojected_wrs=True)
+        assert {p['name'] for p in pool} == {'Projected WR', 'Deep RB'}
+
+    def test_default_off_keeps_everyone(self):
+        # Per-source comparison builds must NOT lose fallback WRs: the
+        # fallback 'source' projects every WR by construction
+        pool = self.make_wr_pool()
+        assert any(p['name'] == 'Kyrese Rowan' for p in pool)
+
+    def test_injury_riser_survives(self):
+        # An injury riser gets projected by a real board once promoted —
+        # 'fallback' WRs are the ones nobody lists at all
+        from player_builder import filter_unprojected_wrs
+        projections = {
+            1: {'projection': 11.0, 'source': 'dailyfantasyfuel'},
+            2: {'projection': 8.3, 'source': 'fallback'},
+        }
+        draftables = [
+            make_draftable(1, 'Promoted WR3', 'WR', 'KC', 3400),
+            make_draftable(2, 'PS Signing', 'WR', 'KC', 3000),
+        ]
+        pool = build_player_pool(draftables, projections,
+                                 drop_backup_qbs=False)
+        kept, dropped = filter_unprojected_wrs(pool)
+        assert [p['name'] for p in kept] == ['Promoted WR3']
+        assert [p['name'] for p in dropped] == ['PS Signing']
     """build_auto_exclusions: manual + DFF OUT + traded players, one list."""
 
     def test_combines_all_three_layers(self, monkeypatch):

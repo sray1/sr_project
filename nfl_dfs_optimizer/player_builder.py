@@ -4,7 +4,8 @@ Player pool construction for the NFL DFS optimizer.
 Adapted from dfs_lineup_optimizer/player_builder.py:
 - Deduplicates CPT/UTIL entries (showdown slates list each player twice,
   CPT at 1.5x salary; we keep the base-salary entry)
-- Skips disabled players and sub-minimum salaries
+- Skips disabled players, DK-status OUT/IR players, and sub-minimum
+  salaries
 - Drops backup QBs (DK draftables carry no depth-chart flag, so the salary
   gap within a team's QBs is the starter signal) and any manually excluded
   players
@@ -45,6 +46,30 @@ def filter_backup_qbs(pool):
                         and (entry.get('salary') or 0)
                         < max_qb_salary.get(entry.get('team'), 0))
         (dropped if is_backup_qb else kept).append(entry)
+    return kept, dropped
+
+
+def filter_unprojected_wrs(pool):
+    """Drop WRs no projection source lists (practice squad / WR4+ / injured).
+
+    The main pipeline's fallback curve is a salary line — it happily gives
+    an $8.30 projection to a practice-squad signing DK still lists on the
+    slate (Kyrese Rowan, signed to the Saints' PS 9 days before week 1,
+    was picked at $3,000 over real WRs). Projection boards (DFF, CSV,
+    FantasyPros, BlueCollar) cover genuine WR3-or-better roles; injury
+    risers get projected once injuries push them up the depth chart, so
+    this filter keeps them. Applied to WRs only, and never to the
+    per-source comparison builds (the fallback 'source' projects every
+    WR by construction).
+
+    Returns:
+        (kept, dropped) pool entries
+    """
+    kept, dropped = [], []
+    for entry in pool:
+        is_deep_wr = ('WR' in (entry.get('positions') or [])
+                      and entry.get('source') == 'fallback')
+        (dropped if is_deep_wr else kept).append(entry)
     return kept, dropped
 
 
@@ -160,7 +185,8 @@ def build_auto_exclusions(players, manual_exclude=None, allow_scrape=True):
 
 
 def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
-                     drop_backup_qbs=True, exclude=None, verbose=True):
+                     drop_backup_qbs=True, exclude=None, verbose=True,
+                     drop_unprojected_wrs=False):
     """Build the deduplicated, projected player pool.
 
     Args:
@@ -176,6 +202,11 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
             exclude_named_players)
         verbose: Print what the filters dropped (disable for repeated
             per-source pool builds so the note prints once)
+        drop_unprojected_wrs: Drop WRs whose projection is salary-fallback
+            (no projection source lists them: practice squad / WR4+ / not
+            on the fantasy radar). Default False — the per-source
+            comparison builds must NOT use it (the fallback 'source'
+            would drop every WR); the main pipeline passes True.
 
     Returns:
         List of player dicts with:
@@ -184,8 +215,14 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
     """
     # Keep the lowest-salary entry per player_id (drops the 1.5x CPT variant)
     best_by_id = {}
+    out_ir_names = []
     for player in draftables:
-        if player['is_disabled']:
+        if player.get('is_disabled'):
+            continue
+        # DK's own injury status ('OUT'/'IR'; 'Q'/'D' stay in) — flags
+        # OUT/IR players days before is_disabled flips pre-lock
+        if (player.get('status') or '').strip().upper() in ('OUT', 'IR'):
+            out_ir_names.append(player['name'])
             continue
         if not player['salary'] or player['salary'] < min_salary:
             continue
@@ -195,6 +232,12 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
         existing = best_by_id.get(player['player_id'])
         if existing is None or player['salary'] < existing['salary']:
             best_by_id[player['player_id']] = player
+
+    if out_ir_names and verbose:
+        unique = sorted({n for n in out_ir_names if n})
+        shown = ', '.join(unique[:5]) + (', ...' if len(unique) > 5 else '')
+        print(f"DK OUT/IR status filter: dropped {len(unique)} players "
+              f"({shown})")
 
     pool = []
     for player_id, player in best_by_id.items():
@@ -216,6 +259,12 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
             names = ', '.join(f"{p['name']} ({p['team']})" for p in backup_qbs)
             print(f"Backup QB filter: dropped {len(backup_qbs)} "
                   f"({names}) - kept each team's top-salaried QB")
+
+    if drop_unprojected_wrs:
+        pool, deep_wrs = filter_unprojected_wrs(pool)
+        if deep_wrs and verbose:
+            print(f"Deep-WR filter: dropped {len(deep_wrs)} fallback-only WRs "
+                  f"(practice squad / WR4+ / not projected by any source)")
 
     return pool
 

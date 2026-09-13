@@ -134,6 +134,7 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
 
     pool = build_player_pool(draftables, player_projections,
                              drop_backup_qbs=not args.keep_backup_qbs,
+                             drop_unprojected_wrs=not args.keep_deep_wrs,
                              exclude=build_auto_exclusions(
                                  draftables, args.exclude,
                                  allow_scrape=not args.no_scrape))
@@ -206,6 +207,10 @@ def parse_args():
     parser.add_argument('--keep-backup-qbs', action='store_true',
                         help="Do NOT auto-drop backup QBs (default: keep only "
                              "each team's top-salaried QB)")
+    parser.add_argument('--keep-deep-wrs', action='store_true',
+                        help="Do NOT auto-drop WRs that no projection source "
+                             "lists (default: drop fallback-only WRs - practice "
+                             "squad / WR4+ players DK still shows on the slate)")
     parser.add_argument('--compare', action='store_true',
                         help="Compare optimal lineups across ALL projection "
                              "sources (DailyFantasyFuel, BlueCollarDFS, CSV, "
