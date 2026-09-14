@@ -255,14 +255,26 @@ def save_hindsight_lineup(contest_id, mode, lineup, total_actual):
     Args:
         contest_id: Contest the lineup was optimal for
         mode: 'showdown' or 'classic'
-        lineup: lineup_to_dict-shaped lineup whose per-player 'projection'
-            values ARE the actual DK points
+        lineup: lineup dict from the optimizer whose per-player
+            'projection' values ARE the actual DK points — classic
+            lineup_to_dict shape ('players') or showdown shape
+            ('captain' + 'flex'; the captain's stored actual is its BASE
+            points, the 1.5x is applied at read time like lineups)
         total_actual: The lineup's total actual points (== the optimizer
-            objective when computed from graded actuals)
+            objective when computed from graded actuals; includes the
+            1.5x captain multiplier for showdown)
     """
-    players = [{'name': p['name'], 'salary': p['salary'],
-                'actual': p.get('projection'), 'is_captain': False}
-               for p in lineup['players']]
+    if 'captain' in lineup:
+        captain = lineup['captain']
+        players = [{'name': captain['name'], 'salary': captain['salary'],
+                    'actual': captain.get('projection'), 'is_captain': True}]
+        players += [{'name': p['name'], 'salary': p['salary'],
+                     'actual': p.get('projection'), 'is_captain': False}
+                    for p in lineup['flex']]
+    else:
+        players = [{'name': p['name'], 'salary': p['salary'],
+                    'actual': p.get('projection'), 'is_captain': False}
+                   for p in lineup['players']]
     computed_at = datetime.now().isoformat()
     conn = get_connection()
     conn.execute("""

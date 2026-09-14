@@ -68,6 +68,26 @@ class TestHindsightLineups:
     def test_missing_contest_returns_none(self, temp_db):
         assert temp_db.get_hindsight_lineup(999) is None
 
+    def test_showdown_shape_saved_with_captain_flag(self, temp_db):
+        temp_db.save_contest(7, 8, 'NE @ SEA Showdown', 'showdown',
+                             ['NE @ SEA'])
+        lineup = {
+            'captain': {'name': 'Jaxon Smith-Njigba', 'team': 'SEA',
+                        'salary': 10600, 'projection': 29.2},
+            'flex': [{'name': 'Drake Maye', 'team': 'NE', 'salary': 10000,
+                      'projection': 12.82}],
+            'total_projection': 56.62,  # 29.2 x 1.5 + 12.82
+            'total_salary': 25900,
+        }
+        temp_db.save_hindsight_lineup(7, 'showdown', lineup, 56.62)
+        row = temp_db.get_hindsight_lineup(7)
+        assert row['total_actual'] == 56.62
+        captain = next(p for p in row['players'] if p['is_captain'])
+        assert captain['name'] == 'Jaxon Smith-Njigba'
+        assert captain['actual'] == 29.2  # base points, 1.5x at read time
+        flex = next(p for p in row['players'] if not p['is_captain'])
+        assert flex['name'] == 'Drake Maye'
+
 
 class TestSchema:
     def test_init_creates_tables(self, temp_db):
