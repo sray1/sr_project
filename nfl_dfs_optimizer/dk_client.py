@@ -144,6 +144,40 @@ def select_main_slate_contest(contests=None):
     return pool[0] if pool else None
 
 
+def _client_fallback_draftables(draft_group_id):
+    """Fetch draftables via the `draft_kings` client library.
+
+    Fallback only — the raw endpoint carries DK's injury `status` field
+    (OUT/IR/Q/D), which the client library drops. Used when the raw
+    endpoint fails outright, so the pool is at worst degraded (no
+    early OUT/IR flags), never empty.
+    """
+    try:
+        response = get_draftkings_client().draftables(
+            draft_group_id=draft_group_id)
+    except Exception as e:
+        print(f"  Client-library draftables fetch failed: {e}")
+        return []
+
+    normalized = []
+    for player in (response.players or []):
+        competition = player.competition_details
+        normalized.append({
+            'player_id': player.player_id,
+            'name': player.name_details.display,
+            'position': player.position_name,
+            'positions': (player.position_name or '').split('/'),
+            'salary': int(player.salary) if player.salary else None,
+            'team': (player.team_details.abbreviation
+                     if player.team_details else None),
+            'game': competition.name if competition else None,
+            'game_start': competition.starts_at if competition else None,
+            'is_disabled': bool(player.is_disabled),
+            'status': '',
+        })
+    return normalized
+
+
 def fetch_draftables(draft_group_id):
     """Fetch and normalize draftable players for a draft group.
 
@@ -167,14 +201,19 @@ def fetch_draftables(draft_group_id):
             status: 'OUT'/'IR'/'Q'/'D' or '' (DK reports 'None')
     """
     url = DK_DRAFTABLES_URL.format(draft_group_id=draft_group_id)
+    # DK added Akamai UA filtering on this endpoint (mid-Sept 2026): a
+    # spoofed browser UA ('Mozilla/5.0') is 403-blocked endpoint-wide while
+    # requests' honest default UA ('python-requests/x') passes — send no
+    # User-Agent at all.
     try:
-        response = requests.get(url, timeout=20,
-                               headers={'User-Agent': 'Mozilla/5.0'})
+        response = requests.get(url, timeout=20)
         response.raise_for_status()
         entries = response.json().get('draftables') or []
     except (requests.RequestException, ValueError) as e:
-        print(f"  Draftables fetch failed: {e}")
-        return []
+        print(f"  Raw draftables fetch failed: {e}")
+        print("  Falling back to the draft_kings client "
+              "(injury status unavailable)")
+        return _client_fallback_draftables(draft_group_id)
 
     normalized = []
     for entry in entries:

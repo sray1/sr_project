@@ -84,6 +84,61 @@ class TestFetchDraftables:
             Mock(side_effect=requests_mod.ConnectionError('boom')))
         assert dk_client.fetch_draftables(1) == []
 
+    def test_no_spoofed_browser_ua_sent(self, monkeypatch):
+        # DK's Akamai filter (mid-Sept 2026) 403-blocks browser-like UAs on
+        # the raw endpoint while requests' default UA passes — a regression
+        # that re-adds a spoofed UA would silently break every fetch.
+        sent_kwargs = {}
+
+        def capture_get(url, **kwargs):
+            sent_kwargs.update(kwargs)
+            return mock_response({'draftables': []})
+
+        monkeypatch.setattr('dk_client.requests.get', capture_get)
+        dk_client.fetch_draftables(1)
+        ua = sent_kwargs.get('headers', {}).get('User-Agent')
+        assert ua is None
+
+    def test_raw_failure_falls_back_to_client(self, monkeypatch):
+        # Raw endpoint dead -> the draft_kings client keeps the pool alive
+        # (at the cost of the injury status field)
+        import requests as requests_mod
+        monkeypatch.setattr(
+            'dk_client.requests.get',
+            Mock(side_effect=requests_mod.ConnectionError('403')))
+        fallback = Mock()
+        fallback.players = [
+            Mock(player_id=1, name_details=Mock(display='Patrick Mahomes'),
+                 position_name='QB', salary=8000.0,
+                 team_details=Mock(abbreviation='KC'), is_disabled=False,
+                 competition_details=Mock(
+                     name='KC @ BAL',
+                     starts_at=datetime(2026, 9, 13, 17, 0,
+                                        tzinfo=timezone.utc)))]
+        client = Mock()
+        client.draftables.return_value = fallback
+        monkeypatch.setattr('dk_client.get_draftkings_client',
+                            lambda: client)
+        players = dk_client.fetch_draftables(1)
+        assert len(players) == 1
+        p = players[0]
+        assert p['name'] == 'Patrick Mahomes'
+        assert p['salary'] == 8000
+        assert p['status'] == ''  # the known cost of the fallback
+        assert p['game_start'] == datetime(2026, 9, 13, 17, 0,
+                                           tzinfo=timezone.utc)
+
+    def test_raw_and_client_both_fail_returns_empty(self, monkeypatch):
+        import requests as requests_mod
+        monkeypatch.setattr(
+            'dk_client.requests.get',
+            Mock(side_effect=requests_mod.ConnectionError('403')))
+        client = Mock()
+        client.draftables.side_effect = RuntimeError('also dead')
+        monkeypatch.setattr('dk_client.get_draftkings_client',
+                            lambda: client)
+        assert dk_client.fetch_draftables(1) == []
+
 
 class TestDKStatusPoolFilter:
     """build_player_pool drops DK-status OUT/IR; Q/D stay in."""
