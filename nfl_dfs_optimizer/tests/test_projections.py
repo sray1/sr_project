@@ -1,8 +1,11 @@
 """Tests for projection sources, name matching, and fallbacks (projections.py)."""
 
+import json
 import os
+from unittest.mock import Mock
 
 import pytest
+import requests
 
 from projections import (
     normalize_name, normalize_dst_name, load_csv_projections,
@@ -124,7 +127,7 @@ class TestGetPlayerProjections:
 
         # Scraper would return a different value; CSV must win
         monkeypatch.setattr('projections.run_scrape_fetchers',
-                            lambda week=None: ('numberfire',
+                            lambda week=None, **kw:('numberfire',
                                               {'patrick mahomes': 10.0}))
 
         result = get_player_projections(
@@ -135,7 +138,7 @@ class TestGetPlayerProjections:
 
     def test_scrape_used_when_no_csv(self, monkeypatch):
         monkeypatch.setattr('projections.run_scrape_fetchers',
-                            lambda week=None: ('numberfire',
+                            lambda week=None, **kw:('numberfire',
                                               {'patrick mahomes': 21.0}))
 
         result = get_player_projections(self.make_pool(), allow_scrape=True)
@@ -144,7 +147,7 @@ class TestGetPlayerProjections:
 
     def test_fallback_when_no_source_matches(self, monkeypatch):
         monkeypatch.setattr('projections.run_scrape_fetchers',
-                            lambda week=None: (None, {}))
+                            lambda week=None, **kw:(None, {}))
 
         result = get_player_projections(self.make_pool(), allow_scrape=True)
         assert result[3]['source'] == 'fallback'
@@ -160,14 +163,14 @@ class TestGetPlayerProjections:
 
     def test_dst_matches_team_token(self, monkeypatch):
         monkeypatch.setattr('projections.run_scrape_fetchers',
-                            lambda week=None: ('numberfire', {'patriots': 8.5}))
+                            lambda week=None, **kw:('numberfire', {'patriots': 8.5}))
         result = get_player_projections(self.make_pool(), allow_scrape=True)
         assert result[2]['projection'] == 8.5
         assert result[2]['source'] == 'numberfire'
 
     def test_every_player_gets_projection(self, monkeypatch):
         monkeypatch.setattr('projections.run_scrape_fetchers',
-                            lambda week=None: (None, {}))
+                            lambda week=None, **kw:(None, {}))
         result = get_player_projections(self.make_pool())
         assert set(result.keys()) == {1, 2, 3}
         assert all(v['projection'] >= 0 for v in result.values())
@@ -296,6 +299,118 @@ class TestDFFParser:
         from projections import FETCHER_REGISTRY
         assert FETCHER_REGISTRY[0][0] == 'dailyfantasyfuel'
         assert 'bluecollar' in [name for name, _ in FETCHER_REGISTRY]
+
+
+class TestDFFSlateResolution:
+    """Per-slate DFF pages: the bare /nfl/projections/ URL now defaults to
+    ONE slate (e.g. "Afternoon Only"), so the contest's own slate must be
+    resolved from the /data/slates/recent JSON and requested explicitly."""
+
+    @staticmethod
+    def slates():
+        return json.loads(load_fixture('dff_slates.json'))['slates']
+
+    def test_single_game_resolves_showdown_slate(self):
+        url, is_showdown = projections.resolve_dff_slate(
+            self.slates(), ['IND @ KC'])
+        assert url == '25768'
+        assert is_showdown is True
+
+    def test_single_game_needs_exact_match(self):
+        # A nearby slate (JAX @ DEN exists) must not match a different game
+        url, is_showdown = projections.resolve_dff_slate(
+            self.slates(), ['JAX @ KC'])
+        assert (url, is_showdown) == (None, False)
+
+    def test_multi_game_picks_tightest_covering_slate(self):
+        # A 13-game classic slate: the 13-game main slate (url '25754') wins
+        # over the 15-game Sun-Mon slate — resolution only counts games
+        # (team membership isn't checked), so synthetic names are fine
+        games = [f'T{i} @ B{i}' for i in range(13)]
+        url, is_showdown = projections.resolve_dff_slate(self.slates(), games)
+        assert url == '25754'
+        assert is_showdown is False
+
+    def test_multi_game_no_covering_slate(self):
+        slates = [s for s in self.slates() if s.get('showdown_flag')]
+        assert projections.resolve_dff_slate(slates, ['A @ B', 'C @ D']) \
+            == (None, False)
+
+    def test_empty_inputs(self):
+        assert projections.resolve_dff_slate([], ['IND @ KC']) == (None, False)
+        assert projections.resolve_dff_slate(self.slates(), []) == (None, False)
+
+    def test_fetch_dff_slates_parses_json(self, monkeypatch):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = json.loads(
+            load_fixture('dff_slates.json'))
+        monkeypatch.setattr(projections.requests, 'get',
+                            lambda url, **kw: response)
+        slates = projections.fetch_dff_slates('2026-09-20')
+        assert len(slates) == 20
+        assert any(s.get('slate_type') == 'IND @ KC' for s in slates)
+
+    def test_fetch_dff_slates_failure_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(projections.requests, 'get',
+                            Mock(side_effect=requests.ConnectionError('x')))
+        assert projections.fetch_dff_slates('2026-09-20') == []
+
+    def test_scrape_uses_resolved_slate_page(self, monkeypatch):
+        # slate_games given -> the per-slate showdown page is fetched
+        fetched = []
+
+        def fake_fetch_html(url):
+            fetched.append(url)
+            return load_fixture('dff_projections.html')
+
+        monkeypatch.setattr(projections, '_fetch_html', fake_fetch_html)
+        monkeypatch.setattr(projections, 'fetch_dff_slates',
+                            lambda d=None: self.slates())
+        projections.scrape_dailyfantasyfuel(
+            slate_games=['IND @ KC'], slate_date='2026-09-20')
+        assert fetched == [projections.DFF_SHOWDOWN_URL
+                           + '/2026-09-20?slate=25768']
+
+    def test_scrape_unmatched_slate_falls_back_to_default(self, monkeypatch):
+        fetched = []
+
+        def fake_fetch_html(url):
+            fetched.append(url)
+            return load_fixture('dff_projections.html')
+
+        monkeypatch.setattr(projections, '_fetch_html', fake_fetch_html)
+        monkeypatch.setattr(projections, 'fetch_dff_slates',
+                            lambda d=None: self.slates())
+        projections.scrape_dailyfantasyfuel(slate_games=['A @ B'])
+        assert fetched == [projections.DFF_URL]
+
+    def test_scrape_without_slate_games_uses_default(self, monkeypatch):
+        fetched = []
+
+        def fake_fetch_html(url):
+            fetched.append(url)
+            return load_fixture('dff_projections.html')
+
+        monkeypatch.setattr(projections, '_fetch_html', fake_fetch_html)
+        projections.scrape_dailyfantasyfuel()
+        assert fetched == [projections.DFF_URL]
+
+    def test_slate_context_from_pool(self):
+        from datetime import datetime, timezone
+        from projections import _slate_context
+        # Sunday 8:20 PM ET = Monday 00:20 UTC — the slate date must come
+        # out as the ET date (DFF lists it on the Sunday page)
+        players = [
+            {'player_id': 1, 'game': 'IND @ KC',
+             'game_start': datetime(2026, 9, 21, 0, 20, tzinfo=timezone.utc)},
+            {'player_id': 2, 'game': 'IND @ KC',
+             'game_start': datetime(2026, 9, 21, 0, 20, tzinfo=timezone.utc)},
+            {'player_id': 3},
+        ]
+        assert _slate_context(players) == (['IND @ KC'], '2026-09-20')
+        # synthetic pools with no game info keep the default-slate behavior
+        assert _slate_context([{'player_id': 1}]) == ([], None)
 
 
 class TestDFFOutList:
@@ -580,7 +695,7 @@ class TestGetSourceProjections:
 
     def test_each_source_resolved_independently(self, monkeypatch):
         monkeypatch.setattr('projections.run_all_scrape_fetchers',
-                            lambda week=None: {
+                            lambda week=None, **kw:{
                                 'dailyfantasyfuel': {'patrick mahomes': 17.5},
                                 'numberfire': {'patrick mahomes': 16.0},
                             })
@@ -594,7 +709,7 @@ class TestGetSourceProjections:
 
     def test_fallback_source_always_present(self, monkeypatch):
         monkeypatch.setattr('projections.run_all_scrape_fetchers',
-                            lambda week=None: {})
+                            lambda week=None, **kw:{})
         sources = get_source_projections(self.make_pool(), allow_scrape=True)
         assert set(sources.keys()) == {'fallback'}
         assert sources['fallback'][1]['projection'] == 21.6  # 8000*.0022+4
@@ -603,7 +718,7 @@ class TestGetSourceProjections:
         csv_file = tmp_path / "proj.csv"
         csv_file.write_text("name,points\nPatrick Mahomes,25.5\n", encoding='utf-8')
         monkeypatch.setattr('projections.run_all_scrape_fetchers',
-                            lambda week=None: {})
+                            lambda week=None, **kw:{})
 
         sources = get_source_projections(self.make_pool(), csv_path=str(csv_file),
                                          allow_scrape=True)
@@ -620,7 +735,7 @@ class TestGetSourceProjections:
 
     def test_every_source_covers_every_player(self, monkeypatch):
         monkeypatch.setattr('projections.run_all_scrape_fetchers',
-                            lambda week=None: {'s1': {'patrick mahomes': 18.0}})
+                            lambda week=None, **kw:{'s1': {'patrick mahomes': 18.0}})
         sources = get_source_projections(self.make_pool(), allow_scrape=True)
         for source, projections in sources.items():
             assert set(projections.keys()) == {1, 2, 3}

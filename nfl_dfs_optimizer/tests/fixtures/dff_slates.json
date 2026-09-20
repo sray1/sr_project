@@ -1,0 +1,246 @@
+{
+ "dates": [
+  {
+   "start_date": "2026-09-14",
+   "short_dow_name": "MON",
+   "month_daynum": "Sep 14"
+  },
+  {
+   "start_date": "2026-09-17",
+   "short_dow_name": "THU",
+   "month_daynum": "Sep 17"
+  },
+  {
+   "start_date": "2026-09-20",
+   "short_dow_name": "SUN",
+   "month_daynum": "Sep 20"
+  },
+  {
+   "start_date": "2026-09-21",
+   "short_dow_name": "MON",
+   "month_daynum": "Sep 21"
+  }
+ ],
+ "slates": [
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "MIN @ CHI",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "2575C"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 26,
+   "game_count": 13,
+   "slate_type": "",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 0,
+   "url": "25754"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "PIT @ NE",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "2575E"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "PHI @ TEN",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25760"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 16,
+   "game_count": 8,
+   "slate_type": "Early Only",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 0,
+   "url": "25755"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "CLE @ TB",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "2575F"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "GB @ NYJ",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25762"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "CAR @ ATL",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "2575D"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "NO @ BAL",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25761"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 30,
+   "game_count": 15,
+   "slate_type": "Sun-Mon",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 0,
+   "url": "25756"
+  },
+  {
+   "start_hhmm": "1:00PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "CIN @ HOU",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "2575B"
+  },
+  {
+   "start_hhmm": "4:05PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "JAX @ DEN",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25764"
+  },
+  {
+   "start_hhmm": "4:05PM",
+   "team_count": 10,
+   "game_count": 5,
+   "slate_type": "Afternoon Only",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 0,
+   "url": "25757"
+  },
+  {
+   "start_hhmm": "4:05PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "LV @ LAC",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25763"
+  },
+  {
+   "start_hhmm": "4:25PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "SEA @ ARI",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25767"
+  },
+  {
+   "start_hhmm": "4:25PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "MIA @ SF",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25765"
+  },
+  {
+   "start_hhmm": "4:25PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "WAS @ DAL",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25766"
+  },
+  {
+   "start_hhmm": "4:25PM",
+   "team_count": 6,
+   "game_count": 3,
+   "slate_type": "Afternoon Turbo",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 0,
+   "url": "25758"
+  },
+  {
+   "start_hhmm": "8:20PM",
+   "team_count": 2,
+   "game_count": 1,
+   "slate_type": "IND @ KC",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 1,
+   "url": "25768"
+  },
+  {
+   "start_hhmm": "8:20PM",
+   "team_count": 4,
+   "game_count": 2,
+   "slate_type": "Primetime",
+   "short_dow_name": "SUN",
+   "long_dow_name": "Sunday",
+   "month_daynum": "Sep 20",
+   "showdown_flag": 0,
+   "url": "25759"
+  }
+ ]
+}

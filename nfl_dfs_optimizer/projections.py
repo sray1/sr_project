@@ -16,6 +16,7 @@ Priority order per player:
 import csv
 import math
 import re
+from datetime import date, timedelta, timezone
 
 import requests
 
@@ -139,11 +140,11 @@ def _fetch_html(url, timeout=15):
     return None
 
 
-def scrape_numberfire(week=None):
+def scrape_numberfire(week=None, slate_games=None, slate_date=None):
     """Scrape numberFire NFL weekly projections (best-effort).
 
-    numberFire publishes DK-point projections for the current week at
-    https://www.numberfire.com/nfl/fantasy/fantasy-football-projections
+    slate_games/slate_date are accepted for registry symmetry and ignored
+    (numberFire serves a league-wide board).
 
     Returns:
         Dict {normalized_name: projected DK points}, or {} on failure.
@@ -193,7 +194,7 @@ def scrape_numberfire(week=None):
     return projections
 
 
-def scrape_fantasypros(week=None):
+def scrape_fantasypros(week=None, slate_games=None, slate_date=None):
     """Scrape FantasyPros NFL weekly projections (best-effort).
 
     FantasyPros posts per-position projection tables at
@@ -268,6 +269,15 @@ def scrape_fantasypros(week=None):
 # ---------------------------------------------------------------------------
 
 DFF_URL = "https://www.dailyfantasyfuel.com/nfl/projections/"
+# DFF's site now serves per-slate projection pages (mid-Sept 2026): the bare
+# /nfl/projections/ URL defaults to ONE slate (e.g. "Afternoon Only"), not
+# the full slate, so the contest's own slate must be requested explicitly.
+DFF_DK_PROJECTIONS_URL = (DFF_URL + "draftkings")
+DFF_SHOWDOWN_URL = ("https://www.dailyfantasyfuel.com/nfl/"
+                    "showdown-single-game-projections/draftkings")
+# Slate list (JS-driven JSON): ?date=YYYY-MM-DD (defaults to today)
+DFF_SLATES_URL = ("https://www.dailyfantasyfuel.com/data/slates/recent/"
+                  "NFL/draftkings")
 
 # Trailing injury-report tokens in player names ("Ja'Marr Chase Q")
 INJURY_TAGS = {'Q', 'D', 'O', 'IR', 'OUT', 'NA', 'P', 'SUSP'}
@@ -392,25 +402,111 @@ def _parse_dff_projections(html):
     return projections, out_entries, team_map
 
 
-def scrape_dailyfantasyfuel(week=None):
+def fetch_dff_slates(slate_date=None):
+    """Fetch DFF's slate list for a date. Best-effort: [] on any failure.
+
+    Args:
+        slate_date: 'YYYY-MM-DD' (defaults to today) — the date of the
+                    contest's slate, from the draftables' game_start
+
+    Returns:
+        List of slate dicts {slate_type, url, showdown_flag, game_count,
+        ...} ('slate_type' is '' for the main classic slate, 'IND @ KC'
+        for a single-game showdown slate).
+    """
+    params = {'date': slate_date or date.today().isoformat(), 'url': ''}
+    try:
+        response = requests.get(DFF_SLATES_URL, params=params,
+                               headers={'User-Agent': _HEADERS['User-Agent'],
+                                        'Accept': 'application/json'},
+                               timeout=15)
+        response.raise_for_status()
+        return response.json().get('slates') or []
+    except (requests.RequestException, ValueError) as e:
+        print(f"    DFF slate list fetch failed: {e}")
+        return []
+
+
+def resolve_dff_slate(slates, slate_games):
+    """Pick the DFF slate covering exactly this contest's games.
+
+    Args:
+        slates: Slate dicts from fetch_dff_slates()
+        slate_games: The contest's game strings ('IND @ KC') from the
+                     draftables — one entry means showdown
+
+    Returns:
+        (slate_url, is_showdown) or (None, False) when nothing matches —
+        the caller then falls back to the default page. A single-game
+        slate must match its game name exactly; a multi-game slate picks
+        the tightest classic slate that covers it (smallest game_count
+        >= the contest's game count — the main slate over Sun-Mon).
+    """
+    if not slates or not slate_games:
+        return None, False
+
+    games = [g.upper() for g in slate_games]
+    if len(games) == 1:
+        for slate in slates:
+            if (slate.get('showdown_flag') == 1
+                    and slate.get('slate_type', '').upper() == games[0]):
+                return slate['url'], True
+        return None, False
+
+    game_count = len(games)
+    covering = [s for s in slates if not s.get('showdown_flag')
+                and s.get('game_count', 0) >= game_count]
+    if not covering:
+        return None, False
+    tightest = min(covering, key=lambda s: s['game_count'])
+    return tightest['url'], False
+
+
+def scrape_dailyfantasyfuel(week=None, slate_games=None, slate_date=None):
     """Scrape Daily Fantasy Fuel NFL DK-point projections.
 
-    Verified 2026-09: https://www.dailyfantasyfuel.com/nfl/projections/ is
-    server-rendered — the full current-slate player table (~450 rows: name
-    with injury tag, position, salary, team, opponent, projected DK points,
-    data-inj injury designation) is present in the initial HTML with no
-    login. `week` is accepted for registry symmetry but ignored (DFF serves
-    the current slate only).
+    Verified 2026-09: the projections pages are server-rendered — the
+    full slate's player table (name with injury tag, position, salary,
+    team, opponent, projected DK points, data-inj injury designation) is
+    present in the initial HTML with no login. `week` is accepted for
+    registry symmetry but ignored (DFF serves the current slate only).
+
+    Since mid-Sept 2026 DFF serves ONE slate per page: the bare
+    /nfl/projections/ URL defaults to a partial slate (e.g. "Afternoon
+    Only"), so when the contest's games are known (slate_games from the
+    draftables, one entry = showdown) the matching per-slate page is
+    fetched instead — the single-game showdown page for one game, the
+    tightest covering classic slate otherwise. Unknown slates fall back
+    to the default page with a printed note.
 
     Also caches the players DFF lists as OUT/IR/SUSP for
     get_dff_out_names(), so the pool excludes them from every lineup.
+
+    Args:
+        week: Ignored (registry symmetry)
+        slate_games: The contest's game strings ('IND @ KC') from the
+                     draftables; None = the site's default slate
+        slate_date: The slate's 'YYYY-MM-DD' (from the draftables'
+                    game_start); defaults to today
 
     Returns:
         Dict {normalized_name: projected DK points}, or {} on failure.
     """
     global _dff_out_cache, _dff_team_cache
     print("  Trying DailyFantasyFuel...")
-    html = _fetch_html(DFF_URL)
+    url = DFF_URL
+    if slate_games:
+        slates = fetch_dff_slates(slate_date)
+        slate_url, is_showdown = resolve_dff_slate(slates, slate_games)
+        if slate_url:
+            base = DFF_SHOWDOWN_URL if is_showdown else DFF_DK_PROJECTIONS_URL
+            date_str = slate_date or date.today().isoformat()
+            url = f"{base}/{date_str}?slate={slate_url}"
+            print(f"    DFF slate page: {slate_url}")
+        else:
+            print("    DFF has no slate matching this contest's games — "
+                  "using the site's default slate (may be partial)")
+    html = _fetch_html(url)
     if not html:
         _dff_out_cache = []
         _dff_team_cache = {}
@@ -640,7 +736,7 @@ def _parse_bluecollar_projections(html):
     return projections
 
 
-def scrape_bluecollar(week=None):
+def scrape_bluecollar(week=None, slate_games=None, slate_date=None):
     """Scrape BlueCollarDFS NFL projections (API first, HTML shell second).
 
     Verified 2026-09: the optimizer page is JS-rendered behind a login and
@@ -685,15 +781,46 @@ FETCHER_REGISTRY = [
 ]
 
 
-def run_scrape_fetchers(week=None):
+# DFF's slate dates are site-local US Eastern — DK's game_start datetimes
+# are UTC, so a Sunday 8:20 PM ET game is Monday 00:20 UTC; deriving the
+# slate date without the ET shift asks DFF for the wrong day's slates.
+_DFF_TZ = timezone(timedelta(hours=-5))
+
+
+def _slate_context(players):
+    """The contest's games + slate date, from the draftables pool.
+
+    Returns:
+        (games, slate_date) — games as the sorted set of game strings
+        ('IND @ KC'), slate_date as the ET 'YYYY-MM-DD' of the earliest
+        game_start (DFF's slate dates are Eastern); ([], None) when the
+        pool carries no game info (synthetic pools), in which case
+        slate-aware scrapers keep their default-slate behavior.
+    """
+    games = sorted({p['game'] for p in players if p.get('game')})
+    starts = [p['game_start'] for p in players if p.get('game_start')]
+    et_starts = [s.astimezone(_DFF_TZ) if s.tzinfo else s for s in starts]
+    slate_date = (min(et_starts).strftime('%Y-%m-%d') if et_starts
+                  else None)
+    return games, slate_date
+
+
+def run_scrape_fetchers(week=None, slate_games=None, slate_date=None):
     """Run every registered scrape fetcher until one yields projections.
+
+    Args:
+        week: Optional NFL week for scrapers that accept one
+        slate_games/slate_date: The contest's games and slate date (from
+                                the draftables) — passed to slate-aware
+                                fetchers (DFF); others ignore them
 
     Returns:
         (source_name, projections_dict) or (None, {}) if all fail
     """
     for name, fetcher in FETCHER_REGISTRY:
         try:
-            projections = fetcher(week=week)
+            projections = fetcher(week=week, slate_games=slate_games,
+                                  slate_date=slate_date)
         except Exception as e:
             print(f"    {name} fetcher crashed: {e}")
             continue
@@ -702,11 +829,17 @@ def run_scrape_fetchers(week=None):
     return None, {}
 
 
-def run_all_scrape_fetchers(week=None):
+def run_all_scrape_fetchers(week=None, slate_games=None, slate_date=None):
     """Run every registered scrape fetcher, keeping all sources that yield data.
 
     Used by the comparison layer (comparison.py / prediction_tracker.py),
     which needs each source independently rather than first-wins.
+
+    Args:
+        week: Optional NFL week for scrapers that accept one
+        slate_games/slate_date: The contest's games and slate date (from
+                                the draftables) — passed to slate-aware
+                                fetchers (DFF); others ignore them
 
     Returns:
         Dict {source_name: projections_dict} with only non-empty results.
@@ -714,7 +847,8 @@ def run_all_scrape_fetchers(week=None):
     results = {}
     for name, fetcher in FETCHER_REGISTRY:
         try:
-            projections = fetcher(week=week)
+            projections = fetcher(week=week, slate_games=slate_games,
+                                  slate_date=slate_date)
         except Exception as e:
             print(f"    {name} fetcher crashed: {e}")
             continue
@@ -841,7 +975,10 @@ def get_source_projections(players, csv_path=None, week=None, allow_scrape=True)
 
     if allow_scrape:
         print("Fetching web projections from all sources (best-effort)...")
-        for name, projections in run_all_scrape_fetchers(week=week).items():
+        slate_games, slate_date = _slate_context(players)
+        for name, projections in run_all_scrape_fetchers(
+                week=week, slate_games=slate_games,
+                slate_date=slate_date).items():
             sources[name] = _attach_source(players, projections, name)
 
     sources['fallback'] = {
@@ -881,7 +1018,9 @@ def get_player_projections(players, csv_path=None, week=None, allow_scrape=True)
     scrape_name, scrape_projections = (None, {})
     if allow_scrape:
         print("Fetching web projections (best-effort)...")
-        scrape_name, scrape_projections = run_scrape_fetchers(week=week)
+        slate_games, slate_date = _slate_context(players)
+        scrape_name, scrape_projections = run_scrape_fetchers(
+            week=week, slate_games=slate_games, slate_date=slate_date)
 
     for player in players:
         # 1. Manual CSV, 2. Scrape results
