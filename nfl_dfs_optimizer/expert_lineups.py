@@ -385,12 +385,149 @@ def fetch_stokastic_lineup(draftables, week=None, starts_at=None):
     return parse_stokastic_lineup(response.text, draftables)
 
 
+def build_expert_lineup(draftables, picks, mode, source_label,
+                        total_projection=0.0):
+    """Build + validate a manually-transcribed expert lineup.
+
+    For sources that publish a finished lineup but have no parser (SI.com,
+    Sporting News, fantasyleagues.info, ...): the picks are transcribed by
+    hand and validated here against the contest's own draftables — the
+    same rules as the Stokastic parser (distinct players, stated salaries
+    must match DK's, legal roster, under the cap). Any failure prints a
+    note and returns None — never a fabricated lineup.
+
+    Args:
+        draftables: The contest's draftables (dk_client.fetch_draftables)
+        picks: List of (name, stated_salary, is_captain) tuples. Showdown
+               captains are stated at their 1.5x CPT-slot price (what the
+               article prints); FLEX at the base DK salary.
+        mode: 'showdown' or 'classic'
+        source_label: Source name, for the printed notes only
+        total_projection: The article's stated projection total, or 0.0
+               when it publishes none (the sentinel that keeps the row
+               out of lineup-level error stats in --summary)
+
+    Returns:
+        Lineup dict in the optimizer's storage shape — showdown captains
+        carry their BASE salary with the 1.5x applied in total_salary,
+        classic in the lineup_to_dict shape — or None on any failure.
+    """
+    by_norm, by_dst, by_last = _draftable_index(draftables)
+    expected = 6 if mode == 'showdown' else 9
+    if len(picks) != expected:
+        print(f"{source_label}: {len(picks)} picks, expected {expected} "
+              f"— skipped")
+        return None
+
+    captains = [p for p in picks if p[2]]
+    if mode == 'showdown' and len(captains) != 1:
+        print(f"{source_label}: {len(captains)} captains, expected 1 "
+              f"— skipped")
+        return None
+    if mode == 'classic' and captains:
+        print(f"{source_label}: classic lineups have no captain — skipped")
+        return None
+
+    players, failures = [], []
+    for name, stated_salary, is_captain in picks:
+        # Captains are stated at the 1.5x CPT-slot price; DK draftables
+        # carry the base salary the slate is keyed on
+        if is_captain:
+            base_salary = stated_salary / 1.5
+            if base_salary != int(base_salary):
+                failures.append(f"'{name}' CPT price ${stated_salary:,} is "
+                                f"not 1.5x a whole DK salary")
+                continue
+            base_salary = int(base_salary)
+        else:
+            base_salary = stated_salary
+        player, reason = _match_pick(name, base_salary, by_norm, by_dst,
+                                     by_last)
+        if player is None:
+            failures.append(reason)
+        else:
+            players.append((player, is_captain))
+
+    if failures:
+        for reason in failures:
+            print(f"{source_label}: {reason}")
+        print(f"{source_label}: lineup failed validation — skipped "
+              f"(nothing fabricated)")
+        return None
+
+    ids = [p['player_id'] for p, _ in players]
+    if len(set(ids)) != expected:
+        print(f"{source_label}: picks resolve to {len(set(ids))} distinct "
+              f"players, expected {expected} — skipped")
+        return None
+
+    if mode == 'showdown':
+        team_counts = {}
+        for p, _ in players:
+            team_counts[p.get('team')] = team_counts.get(p.get('team'), 0) + 1
+        if max(team_counts.values()) > 5:
+            print(f"{source_label}: {max(team_counts.values())} players "
+                  f"from one team (max 5) — skipped")
+            return None
+        # total_salary is the enterable total: captain at 1.5x
+        total_salary = sum(p['salary'] * 1.5 if cpt else p['salary']
+                           for p, cpt in players)
+        total_salary = int(total_salary)
+        captain, = (p for p, cpt in players if cpt)
+        captain = {**captain, 'lineup_position': 'CPT',
+                   'projection': None, 'opponent': _opponent(captain)}
+        flex = [{**p, 'lineup_position': 'FLEX', 'projection': None,
+                 'opponent': _opponent(p)}
+                for p, cpt in players if not cpt]
+        lineup = {'captain': captain, 'flex': flex,
+                  'total_projection': total_projection,
+                  'total_salary': total_salary}
+    else:
+        if not _is_legal_classic([p for p, _ in players]):
+            positions = sorted({p['position'] for p, _ in players})
+            print(f"{source_label}: picks do not form a legal classic "
+                  f"roster ({positions}) — skipped")
+            return None
+        total_salary = sum(p['salary'] for p, _ in players)
+        roster = [p for p, _ in players]
+        slots = _lineup_positions(roster)
+        lineup = {
+            'players': [{'name': p['name'], 'lineup_position': slot,
+                         'positions': p.get('positions') or [],
+                         'team': p.get('team'), 'salary': p['salary'],
+                         'projection': None, 'opponent': _opponent(p)}
+                        for p, slot in zip(roster, slots)],
+            'total_projection': total_projection,
+            'total_salary': total_salary,
+        }
+
+    if total_salary > CAP:
+        print(f"{source_label}: lineup totals ${total_salary:,} — over the "
+              f"${CAP:,} cap, skipped")
+        return None
+
+    proj_note = (f", {total_projection:.1f} projected"
+                 if total_projection else " (no stated projection)")
+    print(f"{source_label}: expert lineup validated — {expected}/{expected} "
+          f"picks matched the slate, ${total_salary:,}{proj_note}")
+    return lineup
+
+
 def print_expert_lineup(lineup, source='stokastic'):
     """Print an expert lineup in the comparison report's format."""
     print(f"\n--- {source} (expert published lineup) ---")
-    print(f"  {lineup['total_projection']:.2f} projected | "
-          f"${lineup['total_salary']:,.0f} salary")
-    for player in lineup['players']:
+    proj_note = (f"{lineup['total_projection']:.2f} projected | "
+                 if lineup['total_projection'] else "")
+    print(f"  {proj_note}${lineup['total_salary']:,.0f} salary")
+    if 'captain' in lineup:
+        captain = lineup['captain']
+        print(f"  {'CPT':<5} {captain['name']:<25} "
+              f"{captain.get('team') or '':<5} "
+              f"${captain['salary'] * 1.5:>8,.0f}")
+        players = lineup['flex']
+    else:
+        players = lineup['players']
+    for player in players:
         proj = (f"{player['projection']:.2f}" if player['projection']
                 is not None else '  --')
         print(f"  {player['lineup_position']:<5} {player['name']:<25} "

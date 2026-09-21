@@ -1,22 +1,24 @@
-"""Hindsight-optimal lineup for the week-1 classic contest (195580486).
+"""Hindsight-optimal classic lineup for any graded contest.
 
 Uses the actual DK points recorded during grading (source_projections.
 actual_fppg, from ESPN box scores) as projections and runs the exact
 classic optimizer with no stack rule — the highest-scoring legal $50,000
 lineup possible with hindsight, to measure every saved prediction
 against. Players with no recorded actual count 0.0 (scratch / no stats).
+The result is saved to the hindsight_optimals table (a benchmark, not a
+prediction).
 
-Run:  python hindsight_classic_week1.py
+Run:  python hindsight_classic.py --contest-id N --draft-group N
 """
 
-from accuracy_db import get_connection
+import argparse
+
+from accuracy_db import get_connection, init_db, save_hindsight_lineup
 from classic_optimizer import generate_classic_lineups, lineup_to_dict
 from dk_client import fetch_draftables
 from player_builder import build_pydfs_players
 from projections import normalize_dst_name, normalize_name
 
-CONTEST_ID = 195580486
-DRAFT_GROUP_ID = 151307
 MIN_SALARY = 300
 
 
@@ -25,15 +27,15 @@ def _is_dst(entry):
             or 'DST' in (entry.get('name') or ''))
 
 
-def main():
+def main(contest_id, draft_group_id):
     conn = get_connection()
     actuals = {r['norm_name']: r['actual_fppg'] for r in conn.execute(
         "SELECT norm_name, actual_fppg FROM source_projections "
-        "WHERE contest_id = ? AND actual_fppg IS NOT NULL", (CONTEST_ID,))}
+        "WHERE contest_id = ? AND actual_fppg IS NOT NULL", (contest_id,))}
     conn.close()
     print(f"{len(actuals)} players/DSTs with recorded actuals")
 
-    draftables = fetch_draftables(DRAFT_GROUP_ID)
+    draftables = fetch_draftables(draft_group_id)
     print(f"{len(draftables)} draftable entries")
 
     # Dedup: classic slates double-list players (FLEX slot rows) — keep the
@@ -60,10 +62,10 @@ def main():
                                        stack_rule='none')
     if not lineups:
         print("No feasible lineup")
-        return
+        return None
     lineup = lineup_to_dict(lineups[0])
 
-    print(f"\nHINDSIGHT-OPTIMAL CLASSIC LINEUP — contest {CONTEST_ID}")
+    print(f"\nHINDSIGHT-OPTIMAL CLASSIC LINEUP — contest {contest_id}")
     print(f"{'=' * 70}")
     print(f"{lineup['total_projection']:.2f} actual DK points | "
           f"${lineup['total_salary']:,.0f} salary\n")
@@ -71,16 +73,18 @@ def main():
         print(f"  {p['lineup_position']:<5} {p['name']:<25} {p['team']:<5} "
               f"${p['salary']:>8,.0f}  {p['projection']:>6.2f}")
 
-    # Persist the benchmark (own table — a ceiling, not a prediction)
-    from accuracy_db import init_db, save_hindsight_lineup
     init_db()
-    save_hindsight_lineup(CONTEST_ID, 'classic', lineup,
+    save_hindsight_lineup(contest_id, 'classic', lineup,
                           lineup['total_projection'])
     print(f"\nSaved hindsight optimal to nfl_accuracy.db "
-          f"(contest {CONTEST_ID})")
+          f"(contest {contest_id})")
 
     return lineup
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--contest-id', type=int, required=True)
+    parser.add_argument('--draft-group', type=int, required=True)
+    args = parser.parse_args()
+    main(args.contest_id, args.draft_group)

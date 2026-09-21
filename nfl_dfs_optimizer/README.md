@@ -91,11 +91,21 @@ Two ways external optimizers are used as yardsticks against the in-house project
 
 **Expert published lineups (classic slates)** — Stokastic's weekly DK cheat sheet (`draftkings-nfl-dfs-cheat-sheet-week-{N}`) is the one free source publishing a complete worked classic lineup. It's parsed from the article's "Worked Example" numbered list (prose mentions of non-rostered players with salaries — e.g. "Tee Higgins ($6,300) ... the reason he is out is price" — are excluded by keeping only the contiguous pick run per list item) and **validated against the contest's own draftables** before use: exactly 9 distinct slate players, every stated salary matches DK's, the roster is a legal classic lineup, and the total matches the article's stated figure. Any failure skips the lineup with a note — nothing is ever fabricated. It appears in `--compare` output and is saved under source `stokastic` by `prediction_tracker.py --save` (classic contests), graded post-game like any other lineup. Frozen against `tests/fixtures/stokastic_week1.html`.
 
+**Hand-transcribed expert lineups (`expert_import.py`)** — other free sources (SI.com showdown + classic, Sporting News, fantasyleagues.info) publish finished lineups with no parseable structure, so their picks are transcribed by hand and imported via the same validation gates (distinct players, stated salaries must match DK's — showdown captains are stated at the 1.5x CPT-slot price, legal roster, under the cap). Most of these articles publish no projection total, so the row is stored with `total_projection = 0.0` — a sentinel meaning "actual only": `--summary` reports it in a separate actual-only table instead of the error stats.
+
+```bash
+python nfl_dfs_optimizer/expert_import.py --contest-id N --source si --mode showdown \
+    --picks "CPT Josh Allen $17100; Jahmyr Gibbs $12000; ..."
+```
+
+The import re-grades the contest from already-recorded actuals (no network); `prediction_tracker.py --rescore [--contest-id N]` does the same for all saved lineups.
+
 **Post-game accuracy tracking (`prediction_tracker.py`)** — mirrors the NBA `dfs_lineup_optimizer/prediction_tracker.py` pattern:
 
 - `--save [--contest-id N]` — pre-game snapshot: per-source player projections + each source's optimal lineup into `nfl_accuracy.db` (idempotent per contest)
 - `--score [--contest-id N | --date YYYY-MM-DD]` — fetch actual results via ESPN's hidden JSON API (`game_results.py`), fill actual DK points per player and lineup (showdown captains at 1.5x), print per-source accuracy. Games not yet final are skipped, never fabricated
-- `--history` / `--summary` — saved contests, cumulative per-source accuracy (lineup-level MAE, player-level MAE + bias)
+- `--rescore [--contest-id N]` — re-grade saved lineups from already-recorded actuals (no network), e.g. after an expert lineup was imported into a graded contest
+- `--history` / `--summary` — saved contests, cumulative per-source accuracy (lineup-level MAE, player-level MAE + bias; expert lineups with the 0.0 sentinel in a separate actual-only table)
 
 ESPN stat cells are read by label name (ESPN appends box-score columns after games go final — e.g. 'QBR' appeared in the passing row post-game — so positional indexing would silently zero whole groups; a group only skips when a required label vanishes). Kicker points are exact from the scoring-plays list, which carries every made field goal with its distance (the box-score kicking group only has aggregates). Kick/punt-return groups are parsed too: return TDs score 6 DK points (return yardage scores 0), and return-only players get an explicit 0-point row so "no recorded actual" means the player truly didn't appear in the box. Blocked kicks, safeties and two-point conversions remain known approximations (ESPN team totals lack them).
 
@@ -129,12 +139,15 @@ nfl_dfs_optimizer/
 ├── showdown_optimizer.py    # Pulp MILP: CPT + 5 FLEX, cap, team-max, top-N diversity
 ├── classic_optimizer.py     # pydfs DK Football + stacking rules, lineup validation
 ├── comparison.py            # --compare: one optimal lineup per source, overlap report
-├── expert_lineups.py         # Stokastic weekly cheat sheet: parsed + validated expert lineup
-├── prediction_tracker.py    # Pre-game snapshot --save, post-game --score/--history/--summary
+├── expert_lineups.py        # Stokastic cheat-sheet parser + expert lineup validation/build helpers
+├── expert_import.py         # Import + validate hand-transcribed expert lineups (SI, Sporting News, ...)
+├── prediction_tracker.py    # Pre-game snapshot --save, post-game --score/--rescore/--history/--summary
 ├── accuracy_db.py           # SQLite layer for accuracy tracking (nfl_accuracy.db)
 ├── game_results.py          # ESPN hidden API: actual NFL box scores → actual DK points
+├── hindsight_showdown.py    # Hindsight-optimal showdown benchmark (recorded actuals → exact MILP)
+├── hindsight_classic.py     # Hindsight-optimal classic benchmark (recorded actuals → exact optimizer)
 ├── sample_projections.csv  # Example manual projection CSV
-└── tests/                   # 215 tests incl. MILP-vs-brute-force cross-check
+└── tests/                   # 259 tests incl. MILP-vs-brute-force cross-check
 ```
 
 ## Notes

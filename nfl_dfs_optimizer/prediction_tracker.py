@@ -5,6 +5,9 @@ Pre-game:  --save      snapshot every source's projections + each source's
                         optimal lineup into nfl_accuracy.db
 Post-game: --score     fetch actual results via ESPN (game_results.py),
                         fill actual DK points, score every saved lineup
+           --rescore   re-grade saved lineups from already-recorded
+                        actuals (no network) — e.g. after expert lineups
+                        were added to a graded contest
 History:   --history   list saved contests + scoring status
            --summary   cumulative per-source accuracy (lineup + player MAE)
 
@@ -102,23 +105,14 @@ def _lineup_norm_name(player_name):
     return normalize_name(player_name)
 
 
-def _score_one_contest(contest_row, date_compact):
-    """Fetch actuals for one contest, fill player rows, score all lineups."""
-    contest_id = contest_row['contest_id']
-    games = json.loads(contest_row['slate_json'])
-    print(f"\nScoring contest [{contest_id}] {contest_row['name']} "
-          f"(mode={contest_row['mode']}, {len(games)} games)")
+def grade_saved_lineups(contest_id):
+    """Score every saved lineup for a contest from recorded actuals.
 
-    results = fetch_slate_results(date_compact, games)
-    if not results:
-        print("  No actual results found — game may not be finished yet")
-        return
-
-    n_updated = db.record_player_actuals(contest_id, results)
-    print(f"  Recorded actual points for {n_updated} projection rows "
-          f"({len(results)} players/DSTs found)")
-
-    # Actuals by norm name (filled above), for lineup scoring
+    Reads actual_fppg from source_projections (filled by --score, or by a
+    previous run) and fills lineup_predictions.total_actual — no network.
+    Used by --score, --rescore, and expert_import (lineups added to an
+    already-graded contest).
+    """
     conn = db.get_connection()
     actual_rows = conn.execute("""
         SELECT norm_name, actual_fppg FROM source_projections
@@ -151,20 +145,48 @@ def _score_one_contest(contest_row, date_compact):
                   f"players had no recorded actual (counted as 0)")
         conn = db.get_connection()
         conn.execute("UPDATE lineup_predictions SET total_actual = ? "
-                      "WHERE id = ?", (round(total_actual, 2), lineup['id']))
+                     "WHERE id = ?", (round(total_actual, 2), lineup['id']))
         conn.commit()
         conn.close()
 
-    # Report per-source accuracy for this contest
+
+def _print_contest_accuracy(contest_id):
+    """Report per-source accuracy for one contest."""
     accuracy = db.contest_accuracy(contest_id)
-    if accuracy:
-        print(f"\n  {'source':<22} {'proj':>7} {'actual':>7} {'diff':>7} "
-              f"{'player MAE':>11}")
-        for a in accuracy:
-            diff = a['lineup_projected'] - a['lineup_actual']
-            mae = f"{a['player_mae']:.2f}" if a['player_mae'] is not None else '--'
-            print(f"  {a['source']:<22} {a['lineup_projected']:>7.2f} "
-                  f"{a['lineup_actual']:>7.2f} {diff:>+7.2f} {mae:>11}")
+    if not accuracy:
+        return
+    print(f"\n  {'source':<22} {'proj':>7} {'actual':>7} {'diff':>7} "
+          f"{'player MAE':>11}")
+    for a in accuracy:
+        mae = f"{a['player_mae']:.2f}" if a['player_mae'] is not None else '--'
+        if a['projected_known']:
+            proj = f"{a['lineup_projected']:>7.2f}"
+            diff = f"{a['lineup_projected'] - a['lineup_actual']:>+7.2f}"
+        else:  # 0.0 sentinel: published lineup, no stated projection
+            proj = f"{'--':>7}"
+            diff = f"{'--':>7}"
+        print(f"  {a['source']:<22} {proj} {a['lineup_actual']:>7.2f} "
+              f"{diff} {mae:>11}")
+
+
+def _score_one_contest(contest_row, date_compact):
+    """Fetch actuals for one contest, fill player rows, score all lineups."""
+    contest_id = contest_row['contest_id']
+    games = json.loads(contest_row['slate_json'])
+    print(f"\nScoring contest [{contest_id}] {contest_row['name']} "
+          f"(mode={contest_row['mode']}, {len(games)} games)")
+
+    results = fetch_slate_results(date_compact, games)
+    if not results:
+        print("  No actual results found — game may not be finished yet")
+        return
+
+    n_updated = db.record_player_actuals(contest_id, results)
+    print(f"  Recorded actual points for {n_updated} projection rows "
+          f"({len(results)} players/DSTs found)")
+
+    grade_saved_lineups(contest_id)
+    _print_contest_accuracy(contest_id)
 
 
 def _et_date_compact(iso_date):
@@ -208,6 +230,31 @@ def score_contests(args):
             print(f"  Database error scoring {contest_row['contest_id']}: {e}")
 
 
+def rescore_contests(args):
+    """Re-grade saved lineups from recorded actuals (no network)."""
+    db.init_db()
+
+    if args.contest_id:
+        rows = [r for r in db.list_contests()
+                if r['contest_id'] == args.contest_id]
+        if not rows:
+            print(f"No saved contest {args.contest_id} — run --save first")
+            return
+    else:
+        rows = [r for r in db.list_contests() if r['n_scored'] > 0]
+        if not rows:
+            print("No graded contests (only contests with recorded "
+                  "actuals can be rescored)")
+            return
+
+    for contest_row in rows:
+        contest_id = contest_row['contest_id']
+        print(f"\nRescoring contest [{contest_id}] {contest_row['name']} "
+              f"from recorded actuals")
+        grade_saved_lineups(contest_id)
+        _print_contest_accuracy(contest_id)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="NFL DFS projection-source accuracy tracker")
@@ -215,6 +262,9 @@ def parse_args():
                         help="Pre-game: snapshot projections + lineups")
     parser.add_argument('--score', action='store_true',
                         help="Post-game: fetch actuals, score saved lineups")
+    parser.add_argument('--rescore', action='store_true',
+                        help="Re-grade saved lineups from recorded actuals "
+                             "(no network)")
     parser.add_argument('--history', action='store_true',
                         help="List saved contests + scoring status")
     parser.add_argument('--summary', action='store_true',
@@ -252,16 +302,19 @@ def main():
 
     actions = [a for a, flag in
                [('save', args.save), ('score', args.score),
-                ('history', args.history), ('summary', args.summary)]
+                ('rescore', args.rescore), ('history', args.history),
+                ('summary', args.summary)]
                if flag]
     if not actions:
-        print("Pick an action: --save, --score, --history, or --summary")
+        print("Pick an action: --save, --score, --rescore, --history, "
+              "or --summary")
         return
 
     def _run():
         for action in actions:
             {'save': lambda: save_snapshot(args),
              'score': lambda: score_contests(args),
+             'rescore': lambda: rescore_contests(args),
              'history': db.display_history,
              'summary': db.display_accuracy_summary}[action]()
 

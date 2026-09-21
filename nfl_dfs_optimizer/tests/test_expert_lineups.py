@@ -15,7 +15,8 @@ from unittest.mock import Mock
 import pytest
 
 import expert_lineups
-from expert_lineups import (derive_week, fetch_stokastic_lineup,
+from expert_lineups import (build_expert_lineup, derive_week,
+                            fetch_stokastic_lineup,
                             parse_stokastic_lineup, print_expert_lineup)
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'stokastic_week1.html'
@@ -220,6 +221,141 @@ class TestUnits:
         legal = week1_draftables()[:9]
         assert expert_lineups._is_legal_classic(legal)
         assert not expert_lineups._is_legal_classic(legal[1:])  # no QB
+
+
+class TestBuildExpertLineup:
+    """build_expert_lineup: hand-transcribed picks, same validation gates."""
+
+    def showdown_draftables(self):
+        # 4 KC + 2 IND, so a 6-pick lineup can stay under 5 per team
+        return [
+            make_draftable(1, 'Patrick Mahomes', 'QB', 'KC', 9600,
+                           'IND @ KC'),
+            make_draftable(2, 'Travis Kelce', 'TE', 'KC', 7000, 'IND @ KC'),
+            make_draftable(3, 'Xavier Worthy', 'WR', 'KC', 5400, 'IND @ KC'),
+            make_draftable(4, 'Harrison Butker', 'K', 'KC', 4600, 'IND @ KC'),
+            make_draftable(5, 'Jonathan Taylor', 'RB', 'IND', 11000,
+                           'IND @ KC'),
+            make_draftable(6, 'Tyler Warren', 'TE', 'IND', 7200, 'IND @ KC'),
+        ]
+
+    def showdown_picks(self):
+        # CPT stated at the 1.5x CPT-slot price the article prints
+        return [('Patrick Mahomes', 14400, True),
+                ('Jonathan Taylor', 11000, False),
+                ('Travis Kelce', 7000, False),
+                ('Tyler Warren', 7200, False),
+                ('Xavier Worthy', 5400, False),
+                ('Harrison Butker', 4600, False)]
+
+    def test_showdown_lineup_built(self, capsys):
+        lineup = build_expert_lineup(self.showdown_draftables(),
+                                     self.showdown_picks(), 'showdown', 'si')
+        assert lineup is not None
+        assert lineup['captain']['name'] == 'Patrick Mahomes'
+        assert lineup['captain']['salary'] == 9600  # base, not the 1.5x price
+        assert len(lineup['flex']) == 5
+        assert lineup['total_salary'] == 49600  # includes the 1.5x CPT price
+        assert lineup['total_projection'] == 0.0  # no stated projection
+        assert 'si: expert lineup validated' in capsys.readouterr().out
+
+    def test_cpt_price_not_1_5x_whole_salary_rejected(self, capsys):
+        picks = self.showdown_picks()
+        picks[0] = ('Patrick Mahomes', 14002, True)  # not 1.5x anything
+        assert build_expert_lineup(self.showdown_draftables(), picks,
+                                   'showdown', 'si') is None
+        assert 'not 1.5x a whole DK salary' in capsys.readouterr().out
+
+    def test_salary_mismatch_rejected(self, capsys):
+        picks = self.showdown_picks()
+        picks[1] = ('Jonathan Taylor', 9900, False)
+        assert build_expert_lineup(self.showdown_draftables(), picks,
+                                   'showdown', 'si') is None
+        assert 'salary mismatch' in capsys.readouterr().out
+
+    def test_wrong_pick_count_rejected(self, capsys):
+        assert build_expert_lineup(self.showdown_draftables(),
+                                   self.showdown_picks()[:5],
+                                   'showdown', 'si') is None
+        assert 'expected 6' in capsys.readouterr().out
+
+    def test_no_captain_rejected(self, capsys):
+        picks = [(n, s, False) for n, s, _ in self.showdown_picks()]
+        assert build_expert_lineup(self.showdown_draftables(), picks,
+                                   'showdown', 'si') is None
+        assert 'captains, expected 1' in capsys.readouterr().out
+
+    def test_over_five_per_team_rejected(self, capsys):
+        draftables = self.showdown_draftables() + [
+            make_draftable(7, 'Rashee Rice', 'WR', 'KC', 4800, 'IND @ KC'),
+            make_draftable(8, 'Kareem Hunt', 'RB', 'KC', 3600, 'IND @ KC'),
+        ]
+        picks = [('Patrick Mahomes', 14400, True),
+                 ('Travis Kelce', 7000, False),
+                 ('Xavier Worthy', 5400, False),
+                 ('Harrison Butker', 4600, False),
+                 ('Rashee Rice', 4800, False),
+                 ('Kareem Hunt', 3600, False)]
+        assert build_expert_lineup(draftables, picks, 'showdown', 'si') is None
+        assert 'max 5' in capsys.readouterr().out
+
+    def test_over_cap_rejected(self, capsys):
+        draftables = self.showdown_draftables()
+        for d in draftables:
+            if d['name'] == 'Jonathan Taylor':
+                d['salary'] = 15000
+        picks = self.showdown_picks()
+        picks[1] = ('Jonathan Taylor', 15000, False)
+        assert build_expert_lineup(draftables, picks, 'showdown',
+                                   'si') is None
+        assert 'over the' in capsys.readouterr().out
+
+    def test_classic_lineup_built(self):
+        # The same 9 stokastic week-1 picks, hand-transcribed
+        picks = [('Joe Burrow', 6900, False),
+                 ("Ja'Marr Chase", 7800, False),
+                 ('Chase Brown', 7100, False),
+                 ('Jahmyr Gibbs', 8000, False),
+                 ('Chuba Hubbard', 5500, False),
+                 ('Luther Burden III', 5500, False),
+                 ('Devaughn Vele', 3500, False),
+                 ('Trey Mayer', 2900, False),
+                 ('Falcons', 2600, False)]
+        lineup = build_expert_lineup(week1_draftables(), picks, 'classic',
+                                     'test')
+        assert lineup is not None
+        assert lineup['total_salary'] == 49800
+        assert len(lineup['players']) == 9
+        assert all(p['projection'] is None for p in lineup['players'])
+
+    def test_classic_illegal_roster_rejected(self, capsys):
+        picks = [('Joe Burrow', 6900, False),
+                 ("Ja'Marr Chase", 7800, False),
+                 ('Chase Brown', 7100, False),
+                 ('Jahmyr Gibbs', 8000, False),
+                 ('Chuba Hubbard', 5500, False),
+                 ('Luther Burden III', 5500, False),
+                 ('Devaughn Vele', 3500, False),
+                 ('Trey Mayer', 2900, False),
+                 ('Bijan Robinson', 7700, False)]  # no DST
+        assert build_expert_lineup(week1_draftables(), picks, 'classic',
+                                   'test') is None
+        assert 'legal classic roster' in capsys.readouterr().out
+
+    def test_stated_total_projection_kept(self):
+        picks = self.showdown_picks()
+        lineup = build_expert_lineup(self.showdown_draftables(), picks,
+                                     'showdown', 'si',
+                                     total_projection=138.5)
+        assert lineup['total_projection'] == 138.5
+
+    def test_print_showdown_expert_lineup(self, capsys):
+        lineup = build_expert_lineup(self.showdown_draftables(),
+                                     self.showdown_picks(), 'showdown', 'si')
+        print_expert_lineup(lineup, source='si')
+        out = capsys.readouterr().out
+        assert 'CPT' in out and 'Patrick Mahomes' in out
+        assert '14,400' in out  # captain printed at the 1.5x price
 
 
 class TestFetch:

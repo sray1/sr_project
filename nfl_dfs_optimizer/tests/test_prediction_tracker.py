@@ -109,6 +109,61 @@ class TestScoreOneContest:
         assert 'No actual results found' in out
 
 
+class TestGradeSavedLineups:
+    """grade_saved_lineups: score lineups from recorded actuals, no network."""
+
+    def _graded_fixture(self, temp_db):
+        """Contest with recorded actuals and a sentinel expert lineup."""
+        temp_db.save_contest(1, 2, 'test', 'showdown', ['NE @ SEA'])
+        pool = [
+            {'player_id': 1, 'name': 'Drake Maye', 'position': 'QB',
+             'positions': ['QB'], 'team': 'NE', 'salary': 10000,
+             'projection': 20.0, 'source': 'dff'},
+            {'player_id': 2, 'name': 'Patriots DST', 'position': 'DST',
+             'positions': ['DST'], 'team': 'NE', 'salary': 3000,
+             'projection': 8.0, 'source': 'fallback'},
+        ]
+        for source in ('dff', 'fallback'):
+            for player in pool:
+                temp_db.save_source_projection(1, source, player)
+        temp_db.record_player_actuals(1, {
+            'drake maye': {'fppg': 20.0},
+            'patriots': {'fppg': 11.0}})
+
+        # expert lineup: no stated projection (0.0 sentinel)
+        lineup = {'captain': {**pool[0]}, 'flex': [pool[1]],
+                  'total_projection': 0.0, 'total_salary': 18000}
+        temp_db.save_lineup_prediction(1, 'si', 'showdown', lineup)
+
+    def test_scores_captain_at_1_5x(self, temp_db):
+        self._graded_fixture(temp_db)
+        tracker.grade_saved_lineups(1)
+        accuracy = temp_db.contest_accuracy(1)
+        assert accuracy[0]['lineup_actual'] == 41.0  # 1.5 * 20 + 11
+        assert accuracy[0]['projected_known'] is False
+
+    def test_print_renders_sentinel_as_unknown(self, temp_db, capsys):
+        self._graded_fixture(temp_db)
+        tracker.grade_saved_lineups(1)
+        tracker._print_contest_accuracy(1)
+        out = capsys.readouterr().out
+        assert 'si' in out
+        assert '--' in out  # proj/diff columns show '--', not -41.00
+
+    def test_rescore_scores_without_network(self, temp_db, monkeypatch):
+        self._graded_fixture(temp_db)
+
+        class Args:
+            contest_id = 1
+
+        def no_network(*a, **kw):
+            raise AssertionError('--rescore must not hit the network')
+        monkeypatch.setattr(tracker, 'fetch_slate_results', no_network)
+        tracker.rescore_contests(Args())
+        accuracy = temp_db.contest_accuracy(1)
+        assert accuracy[0]['lineup_actual'] == 41.0
+
+
 class TestSaveSnapshot:
     def test_full_save_flow(self, temp_db, monkeypatch):
         draftables = [make_draftable(i, n, p, t, s) for i, n, p, t, s in [

@@ -240,6 +240,63 @@ class TestLineupPredictions:
         assert accuracy[0]['n_players'] == 2
 
 
+class TestProjectionSentinel:
+    """Expert lineups stored with total_projected=0.0 (no stated
+    projection) must not pollute lineup-level error stats."""
+
+    def make_sentinel_lineup(self):
+        lineup = make_showdown_lineup()
+        lineup['total_projection'] = 0.0
+        return lineup
+
+    def test_contest_accuracy_flags_unknown_projection(self, temp_db):
+        temp_db.save_contest(1, 2, 'test', 'showdown', ['KC @ BAL'])
+        temp_db.save_lineup_prediction(1, 'si', 'showdown',
+                                        self.make_sentinel_lineup())
+        temp_db.update_lineup_actual(1, 'si', 41.0)
+        accuracy = temp_db.contest_accuracy(1)
+        assert accuracy[0]['projected_known'] is False
+        assert accuracy[0]['lineup_actual'] == 41.0
+
+    def test_contest_accuracy_known_projection_flagged(self, temp_db):
+        temp_db.save_contest(1, 2, 'test', 'showdown', ['KC @ BAL'])
+        temp_db.save_lineup_prediction(1, 'dff', 'showdown',
+                                        make_showdown_lineup())
+        temp_db.update_lineup_actual(1, 'dff', 41.0)
+        assert temp_db.contest_accuracy(1)[0]['projected_known'] is True
+
+    def test_summary_splits_sentinel_from_error_stats(self, temp_db,
+                                                      capsys):
+        temp_db.save_contest(1, 2, 'test', 'showdown', ['KC @ BAL'])
+        temp_db.save_lineup_prediction(1, 'dff', 'showdown',
+                                        make_showdown_lineup())
+        temp_db.save_lineup_prediction(1, 'si', 'showdown',
+                                        self.make_sentinel_lineup())
+        temp_db.update_lineup_actual(1, 'dff', 41.0)
+        temp_db.update_lineup_actual(1, 'si', 41.0)
+
+        temp_db.display_accuracy_summary()
+        out = capsys.readouterr().out
+        assert 'LINEUP LEVEL' in out
+        assert 'EXPERT LINEUPS' in out
+        # the projected source sits in the error table, the sentinel only
+        # in the actual-only table
+        head, _, tail = out.partition('EXPERT LINEUPS')
+        assert 'dff' in head
+        assert 'si' not in head
+        assert 'si' in tail
+
+    def test_empty_summary_with_only_sentinel_rows(self, temp_db, capsys):
+        temp_db.save_contest(1, 2, 'test', 'showdown', ['KC @ BAL'])
+        temp_db.save_lineup_prediction(1, 'si', 'showdown',
+                                        self.make_sentinel_lineup())
+        temp_db.update_lineup_actual(1, 'si', 41.0)
+        temp_db.display_accuracy_summary()
+        out = capsys.readouterr().out
+        assert 'EXPERT LINEUPS' in out
+        assert 'No scored contests' not in out
+
+
 class TestDisplays:
     def test_history_and_summary_empty(self, temp_db, capsys):
         temp_db.display_history()

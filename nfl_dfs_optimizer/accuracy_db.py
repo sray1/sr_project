@@ -12,7 +12,10 @@ Schema:
 - source_projections one row per (contest, source, player): projected points
                     at save time, actual points filled after the game
 - lineup_predictions one row per (contest, source): the optimal lineup built
-                    from that source's projections, total filled post-game
+                    from that source's projections, total filled post-game.
+                    Expert lineups published without a projection total are
+                    stored with total_projected = 0.0 — a sentinel meaning
+                    "actual only"; summary error stats exclude them.
 """
 
 import json
@@ -362,7 +365,9 @@ def contest_accuracy(contest_id):
 
     Returns:
         List of dicts {source, lineup_projected, lineup_actual,
-        player_mae, n_players} sorted by |error| ascending.
+        projected_known, player_mae, n_players} sorted by |error| ascending.
+        projected_known is False for expert lineups stored with the
+        total_projected=0.0 sentinel (no stated projection).
     """
     conn = get_connection()
     rows = conn.execute("""
@@ -387,6 +392,7 @@ def contest_accuracy(contest_id):
             'source': row['source'],
             'lineup_projected': row['lineup_projected'],
             'lineup_actual': row['lineup_actual'],
+            'projected_known': bool(row['lineup_projected']),
             'player_mae': mae_row['mae'],
             'n_players': mae_row['n'],
         })
@@ -415,7 +421,9 @@ def display_accuracy_summary():
     """Print cumulative per-source accuracy across all scored contests."""
     conn = get_connection()
 
-    # Lineup-level accuracy (how each source's optimal lineup projected vs scored)
+    # Lineup-level accuracy (how each source's optimal lineup projected vs scored).
+    # The total_projected = 0.0 sentinel (expert lineups published without a
+    # projection total) has no error to measure — they're reported separately.
     lineup_rows = conn.execute("""
         SELECT source,
                COUNT(*) AS n,
@@ -423,7 +431,15 @@ def display_accuracy_summary():
                AVG(total_actual) AS avg_actual,
                AVG(ABS(total_projected - total_actual)) AS lineup_mae
         FROM lineup_predictions
-        WHERE total_actual IS NOT NULL
+        WHERE total_actual IS NOT NULL AND total_projected > 0
+        GROUP BY source ORDER BY source
+    """).fetchall()
+    expert_rows = conn.execute("""
+        SELECT source,
+               COUNT(*) AS n,
+               AVG(total_actual) AS avg_actual
+        FROM lineup_predictions
+        WHERE total_actual IS NOT NULL AND total_projected = 0
         GROUP BY source ORDER BY source
     """).fetchall()
 
@@ -439,7 +455,7 @@ def display_accuracy_summary():
     """).fetchall()
     conn.close()
 
-    if not lineup_rows and not player_rows:
+    if not lineup_rows and not player_rows and not expert_rows:
         print("No scored contests yet — run prediction_tracker.py --score "
               "after games finish")
         return
@@ -454,6 +470,13 @@ def display_accuracy_summary():
         for r in lineup_rows:
             print(f"  {r['source']:<22} {r['n']:>4} {r['avg_proj']:>9.2f} "
                   f"{r['avg_actual']:>9.2f} {r['lineup_mae']:>7.2f}")
+
+    if expert_rows:
+        print("\nEXPERT LINEUPS (published lineups, actual only —")
+        print("no stated projection, so no error to measure):")
+        print(f"  {'source':<22} {'n':>4} {'avg actual':>11}")
+        for r in expert_rows:
+            print(f"  {r['source']:<22} {r['n']:>4} {r['avg_actual']:>11.2f}")
 
     if player_rows:
         print("\nPLAYER LEVEL (matched players only, projected vs actual):")
