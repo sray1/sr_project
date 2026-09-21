@@ -111,13 +111,20 @@ def grade_saved_lineups(contest_id):
     Reads actual_fppg from source_projections (filled by --score, or by a
     previous run) and fills lineup_predictions.total_actual — no network.
     Used by --score, --rescore, and expert_import (lineups added to an
-    already-graded contest).
+    already-graded contest). No-ops with a note when the contest has no
+    recorded actuals at all (pre-game import: zeroing every lineup then
+    would make the contest look scored).
     """
     conn = db.get_connection()
     actual_rows = conn.execute("""
         SELECT norm_name, actual_fppg FROM source_projections
         WHERE contest_id = ? AND actual_fppg IS NOT NULL
     """, (contest_id,)).fetchall()
+    if not actual_rows:
+        print("  No recorded actuals for this contest yet — nothing to "
+              "grade (lineups left unscored)")
+        conn.close()
+        return
     actuals = {row['norm_name']: row['actual_fppg'] for row in actual_rows}
     lineups = conn.execute("""
         SELECT id, source, mode, players_json FROM lineup_predictions

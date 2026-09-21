@@ -163,6 +163,28 @@ class TestGradeSavedLineups:
         accuracy = temp_db.contest_accuracy(1)
         assert accuracy[0]['lineup_actual'] == 41.0
 
+    def test_no_actuals_yet_leaves_lineups_unscored(self, temp_db, capsys):
+        # Pre-game import: zero actuals recorded — grading must NOT stamp
+        # total_actual=0 on every lineup (that would look like a real score)
+        temp_db.save_contest(1, 2, 'test', 'showdown', ['NE @ SEA'])
+        player = {'player_id': 1, 'name': 'Drake Maye', 'position': 'QB',
+                   'positions': ['QB'], 'team': 'NE', 'salary': 10000,
+                   'projection': 20.0, 'source': 'dff'}
+        temp_db.save_source_projection(1, 'dff', player)
+        lineup = {'captain': {**player}, 'flex': [],
+                  'total_projection': 30.0, 'total_salary': 10000}
+        temp_db.save_lineup_prediction(1, 'dff', 'showdown', lineup)
+
+        tracker.grade_saved_lineups(1)
+        out = capsys.readouterr().out
+        assert 'nothing to grade' in out
+
+        conn = temp_db.get_connection()
+        row = conn.execute("SELECT total_actual FROM lineup_predictions"
+                           ).fetchone()
+        conn.close()
+        assert row['total_actual'] is None
+
 
 class TestSaveSnapshot:
     def test_full_save_flow(self, temp_db, monkeypatch):
