@@ -13,7 +13,9 @@ History:   --history   list saved contests + scoring status
 
 Usage:
   python prediction_tracker.py --save [--mode showdown] [--contest-id N]
+  python prediction_tracker.py --save --calibrate   # + '{source}+cal' snapshot
   python prediction_tracker.py --score [--contest-id N]
+  python prediction_tracker.py --rescore
   python prediction_tracker.py --history
   python prediction_tracker.py --summary
 """
@@ -25,6 +27,7 @@ from datetime import datetime, timezone, timedelta
 
 import accuracy_db as db
 from analyzer import prepare_contest
+from calibration import apply_corrections, load_corrections
 from comparison import build_lineups_per_source
 from expert_lineups import fetch_stokastic_lineup, print_expert_lineup
 from game_results import fetch_slate_results
@@ -43,7 +46,29 @@ def save_snapshot(args):
 
     source_projections = get_source_projections(
         draftables, csv_path=args.csv, week=args.week,
-        allow_scrape=not args.no_scrape)
+        allow_scrape=not args.no_scrape,
+        kicker_model=not args.no_kicker_model)
+
+    # Optional DB-driven calibration (--calibrate): applied per source, then
+    # snapshots are saved as '{source}+cal' so the accuracy DB tracks raw and
+    # calibrated side by side — a re-run never overwrites the raw snapshot,
+    # and --summary shows whether calibration is actually earning its keep.
+    # Matched rows are relabeled to the '+cal' name so their 'matched' flag
+    # survives (the flag compares each row's source label to the source key).
+    if args.calibrate:
+        corrections = load_corrections()
+        if corrections:
+            calibrated = {}
+            for source, projections in source_projections.items():
+                apply_corrections(projections, draftables, corrections)
+                for info in projections.values():
+                    if info['source'] == source:
+                        info['source'] = f"{source}+cal"
+                calibrated[f"{source}+cal"] = projections
+            source_projections = calibrated
+            print(f"Calibration on: snapshots saved as '{{source}}+cal' "
+                  f"(raw snapshots kept for comparison)")
+
     drop_backup_qbs = not getattr(args, 'keep_backup_qbs', False)
     exclude = build_auto_exclusions(
         draftables, getattr(args, 'exclude', None),
@@ -297,6 +322,14 @@ def parse_args():
     parser.add_argument('--keep-backup-qbs', action='store_true',
                         help="Do NOT auto-drop backup QBs (default: keep "
                              "only each team's top-salaried QB)")
+    parser.add_argument('--no-kicker-model', action='store_true',
+                        help="Opt out of the game-environment kicker model "
+                             "(see kicker_model.py); kickers fall back to "
+                             "board projections / the salary curve")
+    parser.add_argument('--calibrate', action='store_true',
+                        help="Also snapshot CALIBRATED projections + lineups "
+                             "as '{source}+cal' (per-position bias from this "
+                             "DB, n >= 30 graded rows per source-position)")
     # Scoring options
     parser.add_argument('--date', default=None, dest='date_compact',
                         help="Scoreboard date YYYYMMDD for --score "

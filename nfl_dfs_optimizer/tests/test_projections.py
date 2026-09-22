@@ -175,6 +175,71 @@ class TestGetPlayerProjections:
         assert set(result.keys()) == {1, 2, 3}
         assert all(v['projection'] >= 0 for v in result.values())
 
+
+class TestKickerModelIntegration:
+    """The game-environment kicker model is default-on in both resolution
+    layers (see kicker_model.py)."""
+
+    @staticmethod
+    def make_pool():
+        return [
+            {'player_id': 1, 'name': 'Patrick Mahomes', 'position': 'QB',
+             'positions': ['QB'], 'team': 'KC', 'salary': 9600},
+            {'player_id': 2, 'name': 'Chiefs DST', 'position': 'DST',
+             'positions': ['DST'], 'team': 'KC', 'salary': 3500},
+            {'player_id': 3, 'name': 'Harrison Butker', 'position': 'K',
+             'positions': ['K'], 'team': 'KC', 'salary': 4600},
+        ]
+
+    def test_kicker_modeled_by_default(self, monkeypatch):
+        monkeypatch.setattr('projections.run_scrape_fetchers',
+                            lambda week=None, **kw: (None, {}))
+        result = get_player_projections(self.make_pool(), allow_scrape=True)
+        assert result[3]['source'] == 'kicker_model'
+        # NOT the salary curve's 11.2 — the environment model's fair value
+        assert result[3]['projection'] < 11.2
+
+    def test_opt_out_keeps_salary_curve(self, monkeypatch):
+        monkeypatch.setattr('projections.run_scrape_fetchers',
+                            lambda week=None, **kw: (None, {}))
+        result = get_player_projections(self.make_pool(), allow_scrape=True,
+                                        kicker_model=False)
+        assert result[3]['source'] == 'fallback'
+        assert result[3]['projection'] == 11.2  # 4600 * 0.0020 + 2
+
+    def test_csv_kicker_never_overridden(self, tmp_path, monkeypatch):
+        csv_file = tmp_path / "proj.csv"
+        csv_file.write_text("name,points\nHarrison Butker,9.5\n",
+                            encoding='utf-8')
+        monkeypatch.setattr('projections.run_scrape_fetchers',
+                            lambda week=None, **kw: (None, {}))
+        result = get_player_projections(self.make_pool(),
+                                        csv_path=str(csv_file))
+        assert result[3] == {'projection': 9.5, 'source': 'csv'}
+
+    def test_per_source_runs_model_their_own_environments(self, monkeypatch):
+        # Each source's kicker comes from that source's own offense numbers
+        monkeypatch.setattr('projections.run_all_scrape_fetchers',
+                            lambda week=None, slate_games=None,
+                            slate_date=None:
+                            {'numberfire': {'patrick mahomes': 40.0}})
+        sources = get_source_projections(self.make_pool(), allow_scrape=True)
+        assert set(sources) == {'numberfire', 'fallback'}
+        for name, source in sources.items():
+            assert source[3]['source'] == 'kicker_model'
+        # numberfire's Mahomes (25.0) vs the fallback curve (25.12): the
+        # modeled kickers differ slightly
+        assert (sources['numberfire'][3]['projection']
+                != sources['fallback'][3]['projection'])
+
+    def test_source_projections_opt_out(self, monkeypatch):
+        monkeypatch.setattr('projections.run_all_scrape_fetchers',
+                            lambda week=None, slate_games=None,
+                            slate_date=None: {})
+        sources = get_source_projections(self.make_pool(), allow_scrape=False,
+                                         kicker_model=False)
+        assert sources['fallback'][3]['source'] == 'fallback'
+
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 
 

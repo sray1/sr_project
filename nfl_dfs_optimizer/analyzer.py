@@ -18,6 +18,7 @@ import argparse
 from datetime import datetime, timezone, timedelta
 
 from contest_detector import ContestType, detect_contest_type, get_contest_info, display_contest_info
+from calibration import apply_corrections, load_corrections
 from dk_client import (fetch_nfl_contests, select_showdown_contest,
                       select_main_slate_contest, fetch_draftables, show_contest_details)
 from player_builder import (build_player_pool, build_pydfs_players,
@@ -130,7 +131,16 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
             return
 
     player_projections = get_player_projections(
-        draftables, csv_path=args.csv, week=args.week, allow_scrape=not args.no_scrape)
+        draftables, csv_path=args.csv, week=args.week,
+        allow_scrape=not args.no_scrape,
+        kicker_model=not args.no_kicker_model)
+
+    if args.calibrate:
+        corrections = load_corrections()
+        if corrections:
+            n_corrected = apply_corrections(player_projections, draftables,
+                                            corrections)
+            print(f"Calibration: {n_corrected} projections adjusted")
 
     pool = build_player_pool(draftables, player_projections,
                              drop_backup_qbs=not args.keep_backup_qbs,
@@ -145,10 +155,13 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
     # Optimize
     if mode == 'showdown':
         lineups = generate_showdown_lineups(
-            pool, n_lineups=args.lineups, allow_dst_captain=not args.no_dst_captain)
+            pool, n_lineups=args.lineups, allow_dst_captain=not args.no_dst_captain,
+            unique_captains=args.unique_captains)
 
         print(f"\n{'=' * 70}")
-        print(f"OPTIMAL SHOWDOWN LINEUPS ({len(lineups)})")
+        print(f"OPTIMAL SHOWDOWN LINEUPS ({len(lineups)})"
+              + (" — CAPTAIN DIVERSITY MODE: every lineup has a different "
+                 "captain" if args.unique_captains else ""))
         print(f"{'=' * 70}")
 
         for rank, lineup in enumerate(lineups, 1):
@@ -215,6 +228,21 @@ def parse_args():
                         help="Compare optimal lineups across ALL projection "
                              "sources (DailyFantasyFuel, BlueCollarDFS, CSV, "
                              "fallback) instead of the single-pipeline run")
+    parser.add_argument('--no-kicker-model', action='store_true',
+                        help="Opt out of the game-environment kicker model "
+                             "(see kicker_model.py). By default every "
+                             "kicker's projection is modeled from his team's "
+                             "offensive projections — board and salary-curve "
+                             "kicker values both proved less accurate")
+    parser.add_argument('--calibrate', action='store_true',
+                        help="Adjust projections by each source's "
+                             "per-position bias from the accuracy DB "
+                             "(n >= 30 graded rows per source-position); "
+                             "see calibration.py")
+    parser.add_argument('--unique-captains', action='store_true',
+                        help="Showdown: every lineup gets a DIFFERENT "
+                             "captain (the optimal lineup per captain "
+                             "candidate, instead of near-duplicate lineups)")
     return parser.parse_args()
 
 

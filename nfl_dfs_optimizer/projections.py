@@ -20,6 +20,8 @@ from datetime import date, timedelta, timezone
 
 import requests
 
+from kicker_model import apply_kicker_model
+
 # ---------------------------------------------------------------------------
 # Name normalization & matching
 # ---------------------------------------------------------------------------
@@ -927,12 +929,18 @@ def _resolve_player_projection(player, projections, source_name):
     return None, None
 
 
-def _attach_source(players, projections, source_name):
+def _attach_source(players, projections, source_name, kicker_model=True):
     """Resolve every player against one source, salary-fallback for misses.
+
+    Args:
+        kicker_model: Replace kicker projections with the game-environment
+            model (see kicker_model.py) — board and salary-curve kicker
+            projections both proved less accurate than the model.
 
     Returns:
         Dict {player_id: {'projection': float, 'source': str}} — 'source'
-        is the source name when matched, 'fallback' when salary-implied.
+        is the source name when matched, 'fallback' when salary-implied,
+        'kicker_model' for modeled kickers.
     """
     attached = {}
     for player in players:
@@ -943,10 +951,13 @@ def _attach_source(players, projections, source_name):
                 player.get('salary'), player['position'])
             source = 'fallback'
         attached[player['player_id']] = {'projection': projection, 'source': source}
+    if kicker_model:
+        apply_kicker_model(players, attached)
     return attached
 
 
-def get_source_projections(players, csv_path=None, week=None, allow_scrape=True):
+def get_source_projections(players, csv_path=None, week=None, allow_scrape=True,
+                           kicker_model=True):
     """Resolve projections from EVERY available source, independently.
 
     Unlike get_player_projections (first source wins for the main pipeline),
@@ -961,6 +972,8 @@ def get_source_projections(players, csv_path=None, week=None, allow_scrape=True)
         csv_path: Optional manual CSV projection file (one 'csv' source)
         week: Optional NFL week number for scrapers
         allow_scrape: Whether to attempt web scrapers
+        kicker_model: Model each source's kickers from its own offensive
+                      projections (see kicker_model.py)
 
     Returns:
         Dict {source_name: {player_id: {'projection': float, 'source': str}}}.
@@ -971,7 +984,8 @@ def get_source_projections(players, csv_path=None, week=None, allow_scrape=True)
     csv_projections = load_csv_projections(csv_path) if csv_path else {}
     if csv_projections:
         print(f"Loaded {len(csv_projections)} manual CSV projections")
-        sources['csv'] = _attach_source(players, csv_projections, 'csv')
+        sources['csv'] = _attach_source(players, csv_projections, 'csv',
+                                        kicker_model=kicker_model)
 
     if allow_scrape:
         print("Fetching web projections from all sources (best-effort)...")
@@ -979,7 +993,8 @@ def get_source_projections(players, csv_path=None, week=None, allow_scrape=True)
         for name, projections in run_all_scrape_fetchers(
                 week=week, slate_games=slate_games,
                 slate_date=slate_date).items():
-            sources[name] = _attach_source(players, projections, name)
+            sources[name] = _attach_source(players, projections, name,
+                                           kicker_model=kicker_model)
 
     sources['fallback'] = {
         player['player_id']: {
@@ -989,11 +1004,14 @@ def get_source_projections(players, csv_path=None, week=None, allow_scrape=True)
         }
         for player in players
     }
+    if kicker_model:
+        apply_kicker_model(players, sources['fallback'])
 
     return sources
 
 
-def get_player_projections(players, csv_path=None, week=None, allow_scrape=True):
+def get_player_projections(players, csv_path=None, week=None, allow_scrape=True,
+                           kicker_model=True):
     """Resolve a projection for every player in the slate.
 
     Tries sources in priority order per player; every player gets a value.
@@ -1004,6 +1022,9 @@ def get_player_projections(players, csv_path=None, week=None, allow_scrape=True)
         csv_path: Optional manual CSV projection file (highest priority)
         week: Optional NFL week number for scrapers
         allow_scrape: Whether to attempt web scrapers
+        kicker_model: Model kicker projections from the team's offensive
+                      projections (see kicker_model.py); manual CSV kicker
+                      projections are never overridden
 
     Returns:
         Dict {player_id: {'projection': float, 'source': str}}
@@ -1037,6 +1058,9 @@ def get_player_projections(players, csv_path=None, week=None, allow_scrape=True)
             source = 'fallback'
 
         result[player['player_id']] = {'projection': projection, 'source': source}
+
+    if kicker_model:
+        apply_kicker_model(players, result)
 
     return result
 

@@ -149,3 +149,63 @@ class TestShowdownMILP:
         broken['total_salary'] = 99999
         violations = validate_lineup(broken)
         assert len(violations) >= 1  # duplicate or salary (or both) flagged
+
+
+class TestUniqueCaptains:
+    """Captain diversity mode: the optimal lineup per captain candidate."""
+
+    def test_every_captain_distinct(self):
+        pool = small_pool()
+        lineups = generate_showdown_lineups(pool, n_lineups=6,
+                                            unique_captains=True)
+        assert len(lineups) == 6
+        captains = [l['captain']['player_id'] for l in lineups]
+        assert len(set(captains)) == 6
+
+    def test_descending_projection_order(self):
+        lineups = generate_showdown_lineups(small_pool(), n_lineups=5,
+                                            unique_captains=True)
+        projections = [l['total_projection'] for l in lineups]
+        assert projections == sorted(projections, reverse=True)
+
+    def test_first_lineup_is_the_plain_optimum(self):
+        # Banning nothing for lineup 1 -> same captain as normal mode
+        pool = small_pool()
+        plain = generate_showdown_lineups(pool, n_lineups=1)[0]
+        unique = generate_showdown_lineups(pool, n_lineups=1,
+                                           unique_captains=True)[0]
+        assert unique['captain']['player_id'] == plain['captain']['player_id']
+        assert unique['total_projection'] == pytest.approx(
+            plain['total_projection'])
+
+    def test_all_lineups_still_valid(self):
+        pool = small_pool()
+        for lineup in generate_showdown_lineups(pool, n_lineups=5,
+                                                unique_captains=True):
+            assert validate_lineup(lineup) == []
+
+    def test_runs_out_of_captains(self):
+        # Pool of 8 players -> at most 8 distinct captains
+        pool = [make_player(i, f'Player {i}', 'KC', 3000, 5.0) for i in
+                range(1, 6)]
+        pool += [make_player(20 + i, f'Opp {i}', 'BAL', 3000, 4.0) for i in
+                 range(1, 4)]
+        lineups = generate_showdown_lineups(pool, n_lineups=20,
+                                            unique_captains=True)
+        assert len(lineups) == 8  # every player got a captain turn
+
+    def test_dst_captain_respected(self):
+        pool = small_pool() + [
+            make_player(99, 'KC DST', 'KC', 3500, 9.0, positions=('DST', 'FLEX')),
+        ]
+        lineups = generate_showdown_lineups(pool, n_lineups=8,
+                                            allow_dst_captain=False,
+                                            unique_captains=True)
+        for lineup in lineups:
+            assert 'DST' not in (lineup['captain'].get('positions') or [])
+        # With DST captains allowed, one lineup captains the DST
+        lineups = generate_showdown_lineups(pool, n_lineups=11,
+                                            allow_dst_captain=True,
+                                            unique_captains=True)
+        assert any('DST' in (l['captain'].get('positions') or [])
+                   for l in lineups)

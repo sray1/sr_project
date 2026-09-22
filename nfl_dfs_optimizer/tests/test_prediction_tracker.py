@@ -204,7 +204,8 @@ class TestSaveSnapshot:
                                           draftables))
         monkeypatch.setattr(
             tracker, 'get_source_projections',
-            lambda players, csv_path=None, week=None, allow_scrape=True: {
+            lambda players, csv_path=None, week=None, allow_scrape=True,
+            kicker_model=True: {
                 'dailyfantasyfuel': {
                     p['player_id']: {'projection': 12.0,
                                      'source': 'dailyfantasyfuel'}
@@ -220,6 +221,8 @@ class TestSaveSnapshot:
             no_scrape = True
             stack = 'qbwr'
             no_dst_captain = True
+            no_kicker_model = False
+            calibrate = False
 
         tracker.save_snapshot(Args())
 
@@ -238,3 +241,58 @@ class TestSaveSnapshot:
                                                       'fallback'}
         captains = {row['source']: row['captain_name'] for row in lineups}
         assert captains['dailyfantasyfuel'] is not None
+
+    def test_calibrate_saves_plus_cal_snapshots(self, temp_db, monkeypatch):
+        """--calibrate: corrected projections saved as '{source}+cal' rows,
+        matched flags preserved, raw sources untouched by this run."""
+        draftables = [make_draftable(i, n, p, t, s) for i, n, p, t, s in [
+            (1, 'Drake Maye', 'QB', 'NE', 10000),
+            (2, 'Rhamondre Stevenson', 'RB', 'NE', 8400),
+            (3, 'Hunter Henry', 'TE', 'NE', 2200),
+            (4, 'Sam Darnold', 'QB', 'SEA', 9400),
+            (5, 'Kenneth Walker', 'RB', 'SEA', 8600),
+            (6, 'Jaxon Smith', 'WR', 'SEA', 3400),
+        ]]
+        monkeypatch.setattr(tracker, 'prepare_contest',
+                            lambda args: (FakeContest(), 'showdown',
+                                          draftables))
+        monkeypatch.setattr(
+            tracker, 'get_source_projections',
+            lambda players, csv_path=None, week=None, allow_scrape=True,
+            kicker_model=True: {
+                'dailyfantasyfuel': {
+                    p['player_id']: {'projection': 12.0,
+                                     'source': 'dailyfantasyfuel'}
+                    for p in players},
+            })
+        monkeypatch.setattr(tracker, 'load_corrections',
+                            lambda: {'dailyfantasyfuel': {'QB': 1.0}})
+
+        class Args:
+            csv = None
+            week = None
+            no_scrape = True
+            stack = 'qbwr'
+            no_dst_captain = True
+            no_kicker_model = False
+            calibrate = True
+
+        tracker.save_snapshot(Args())
+
+        conn = temp_db.get_connection()
+        rows = conn.execute(
+            "SELECT source, player_name, projected_fppg, matched "
+            "FROM source_projections").fetchall()
+        lineups = conn.execute("SELECT source, total_projected "
+                               "FROM lineup_predictions").fetchall()
+        conn.close()
+
+        # Saved under '+cal'; no raw rows (a raw --save run is separate)
+        assert {r['source'] for r in rows} == {'dailyfantasyfuel+cal'}
+        assert {l['source'] for l in lineups} == {'dailyfantasyfuel+cal'}
+        # QBs get the +1.0 correction, everyone else unchanged
+        by_name = {r['player_name']: r for r in rows}
+        assert by_name['Drake Maye']['projected_fppg'] == 13.0
+        assert by_name['Kenneth Walker']['projected_fppg'] == 12.0
+        # matched flags survive the rename (relabel keeps row source == key)
+        assert all(r['matched'] == 1 for r in rows)

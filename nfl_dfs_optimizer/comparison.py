@@ -200,7 +200,8 @@ def run_comparison(args, contest, mode, draftables):
 
     Args:
         args: Parsed analyzer CLI args (csv, week, no_scrape, stack,
-              no_dst_captain, exclude, keep_backup_qbs are honored)
+              no_dst_captain, exclude, keep_backup_qbs, no_kicker_model,
+              calibrate are honored)
         contest: Selected contest object
         mode: 'showdown' or 'classic'
         draftables: Raw draftables from dk_client.fetch_draftables
@@ -210,7 +211,17 @@ def run_comparison(args, contest, mode, draftables):
     """
     source_projections = get_source_projections(
         draftables, csv_path=args.csv, week=args.week,
-        allow_scrape=not args.no_scrape)
+        allow_scrape=not args.no_scrape,
+        kicker_model=not args.no_kicker_model)
+
+    # Optional DB-driven per-position calibration (analyzer --calibrate):
+    # applied in place for display — the tracker saves '+cal' snapshots
+    # separately when calibrating, so raw and calibrated stay comparable
+    if getattr(args, 'calibrate', False):
+        from calibration import apply_corrections, load_corrections
+        corrections = load_corrections()
+        for projections in source_projections.values():
+            apply_corrections(projections, draftables, corrections)
 
     # getattr: callers (tests, tracker) may use simpler args namespaces
     exclude = build_auto_exclusions(

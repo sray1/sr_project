@@ -22,7 +22,7 @@ MAX_PER_TEAM = 5  # DK NFL showdown rule (captain counts)
 
 
 def _solve_lineup(pool, salary_cap, allow_dst_captain=True, banned_lineups=None,
-                  min_overlap_difference=2):
+                  min_overlap_difference=2, banned_captains=None):
     """Solve one iteration of the showdown MILP.
 
     Args:
@@ -33,6 +33,8 @@ def _solve_lineup(pool, salary_cap, allow_dst_captain=True, banned_lineups=None,
             subsequent lineups must differ by at least min_overlap_difference
             players from each
         min_overlap_difference: How many players must differ from prior lineups
+        banned_captains: Player IDs barred from the captain slot (captain
+            diversity mode — the next-best lineup with a NEW captain)
 
     Returns:
         (captain, flex_list) or None if infeasible
@@ -90,6 +92,11 @@ def _solve_lineup(pool, salary_cap, allow_dst_captain=True, banned_lineups=None,
                 for pid in prev_all
             ) <= (1 + 5) - min_overlap_difference  # overlap of 6 slots
 
+    # Captain diversity: previously used captains are barred from the slot
+    if banned_captains:
+        for pid in banned_captains:
+            problem += captain_vars[pid] == 0
+
     solver = PULP_CBC_CMD(msg=0)
     problem.solve(solver)
 
@@ -112,7 +119,7 @@ def _solve_lineup(pool, salary_cap, allow_dst_captain=True, banned_lineups=None,
 
 
 def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
-                              allow_dst_captain=True):
+                              allow_dst_captain=True, unique_captains=False):
     """Generate the top-N optimal showdown lineups.
 
     Args:
@@ -120,6 +127,13 @@ def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
         n_lineups: Number of lineups to return
         salary_cap: Total salary cap (default $50,000)
         allow_dst_captain: Whether DST can be captain
+        unique_captains: Captain diversity mode — every lineup gets a
+            DIFFERENT captain (the optimal lineup per captain candidate, in
+            descending projection order). Replaces the usual >=2-player
+            overlap diversity, which is redundant once captains differ.
+            Fewer lineups are returned when captain candidates run out
+            (season evidence: the hindsight-optimal captain is rarely the
+            chalk QB, so seeing each captain's best build beats near-dupes).
 
     Returns:
         List of lineup dicts sorted by projected total, descending:
@@ -128,11 +142,17 @@ def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
     """
     lineups = []
     banned = []
+    used_captains = []
 
     for _ in range(n_lineups):
-        solution = _solve_lineup(pool, salary_cap,
-                                 allow_dst_captain=allow_dst_captain,
-                                 banned_lineups=banned)
+        if unique_captains:
+            solution = _solve_lineup(pool, salary_cap,
+                                     allow_dst_captain=allow_dst_captain,
+                                     banned_captains=used_captains)
+        else:
+            solution = _solve_lineup(pool, salary_cap,
+                                     allow_dst_captain=allow_dst_captain,
+                                     banned_lineups=banned)
         if solution is None:
             break
 
@@ -151,7 +171,10 @@ def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
             'total_projection': total_projection,
         })
 
-        banned.append((captain['player_id'], {p['player_id'] for p in flex}))
+        if unique_captains:
+            used_captains.append(captain['player_id'])
+        else:
+            banned.append((captain['player_id'], {p['player_id'] for p in flex}))
 
     return lineups
 

@@ -69,6 +69,9 @@ Output is printed and saved to `nfl_dfs_optimizer/output/` (gitignored). The acc
 | `--keep-backup-qbs` | flag | off | Opt OUT of the backup-QB filter. By default only each team's top-salaried QB stays in the pool (DK prices starters well above backups; draftables have no depth-chart flag) |
 | `--keep-deep-wrs` | flag | off | Opt OUT of the deep-WR filter. By default WRs no projection source lists (fallback-only) are dropped from the pool — practice squad / WR4+ players DK still shows on the slate get fantasy-relevant projections from real boards, and injury risers get projected once promoted, so unlisted = ghost |
 | `--compare` | flag | — | Build one optimal lineup per projection source and print side-by-side overlap/differences (see below) |
+| `--no-kicker-model` | flag | off | Opt OUT of the game-environment kicker model (see below). By default every kicker's projection is modeled from his team's offensive projections — both board and salary-curve kicker values proved less accurate than the model (DFF kicker MAE 6.6, +2.4 over actual; the salary curve hands a $4,600 kicker 11.2 points) |
+| `--calibrate` | flag | — | Adjust projections by each source's per-position bias from the accuracy DB — mean(actual − projected) over matched rows, gated at n ≥ 30 per (source, position); small samples are skipped with a note |
+| `--unique-captains` | flag | — | Showdown: every lineup gets a DIFFERENT captain (the optimal lineup per captain candidate) instead of the usual ≥2-player diversity. The hindsight-optimal captain is rarely the chalk QB (2 of the first 7 showdowns), so this surfaces each captain's best build |
 
 ## Projection sources (priority order)
 
@@ -102,12 +105,28 @@ The import re-grades the contest from already-recorded actuals (no network); `pr
 
 **Post-game accuracy tracking (`prediction_tracker.py`)** — mirrors the NBA `dfs_lineup_optimizer/prediction_tracker.py` pattern:
 
-- `--save [--contest-id N]` — pre-game snapshot: per-source player projections + each source's optimal lineup into `nfl_accuracy.db` (idempotent per contest)
+- `--save [--contest-id N]` — pre-game snapshot: per-source player projections + each source's optimal lineup into `nfl_accuracy.db` (idempotent per contest). Kickers are modeled by default (`--no-kicker-model` opts out); `--calibrate` also snapshots calibrated projections + lineups as `{source}+cal`
 - `--score [--contest-id N | --date YYYY-MM-DD]` — fetch actual results via ESPN's hidden JSON API (`game_results.py`), fill actual DK points per player and lineup (showdown captains at 1.5x), print per-source accuracy. Games not yet final are skipped, never fabricated
 - `--rescore [--contest-id N]` — re-grade saved lineups from already-recorded actuals (no network), e.g. after an expert lineup was imported into a graded contest
 - `--history` / `--summary` — saved contests, cumulative per-source accuracy (lineup-level MAE, player-level MAE + bias; expert lineups with the 0.0 sentinel in a separate actual-only table)
 
 ESPN stat cells are read by label name (ESPN appends box-score columns after games go final — e.g. 'QBR' appeared in the passing row post-game — so positional indexing would silently zero whole groups; a group only skips when a required label vanishes). Kicker points are exact from the scoring-plays list, which carries every made field goal with its distance (the box-score kicking group only has aggregates). Kick/punt-return groups are parsed too: return TDs score 6 DK points (return yardage scores 0), and return-only players get an explicit 0-point row so "no recorded actual" means the player truly didn't appear in the box. Blocked kicks, safeties and two-point conversions remain known approximations (ESPN team totals lack them).
+
+## Projection refinement: kicker model + calibration
+
+Two refinements built from the accuracy DB's own history (both default where stated; both opt-out):
+
+**Kicker model (`kicker_model.py`, default ON)** — no board ranks kickers well: across the first 9 graded contests, DFF's own kicker projections ran +2.4 over actual with 6.6 MAE, and unlisted kickers fall to the salary curve (11.2 points for any $4,600 kicker). Yet a kicker was the hindsight-optimal *captain* in one of the first seven showdowns (Butker, 5 FGs). Every kicker is instead projected from his team's offensive environment:
+
+```
+kicker = 7.36 + 0.016 * (own team's projected DK points at QB/RB/WR/TE - 88.7), clamped [3, 14]
+```
+
+fitted on the DB's 14 recorded kicker-games (the slope is correlation-shrunk; the model's MAE 3.82 beats DFF's 6.6 on the same sample). Per-source runs (`--compare`, `--save`) model each source's kickers from that source's own offensive projections. Manual CSV kicker projections are never overridden. `--no-kicker-model` opts out (analyzer + tracker).
+
+**Calibration (`calibration.py`, `--calibrate`)** — reads each source's per-position bias from `nfl_accuracy.db` (mean(actual − projected) over *matched* rows, n ≥ 30 gate per source-position) and adds it to projections before optimizing. Current DFF corrections: TE +0.91, WR +0.20, QB +0.12, RB −0.08, DST −0.05; positions under the gate (e.g. K at n=6) are skipped with a printed note. In `analyzer.py`/`--compare` the corrections apply in place; in `prediction_tracker.py --save --calibrate` the calibrated snapshot is saved as `{source}+cal` (matched flags preserved), so `--summary` tracks raw and calibrated accuracy side by side — re-runs never overwrite the raw snapshot.
+
+**Captain diversity (`--unique-captains`, showdown)** — generates the optimal lineup *per captain candidate* (each lineup's captain differs, descending by projection) instead of near-duplicate lineups; returns fewer when captain candidates run out.
 
 ## Stacking rules (classic)
 
@@ -135,6 +154,8 @@ nfl_dfs_optimizer/
 ├── contest_detector.py      # Showdown/Classic detection + main-slate detection
 ├── nfl_scoring.py           # DK NFL scoring rules (offense + DST)
 ├── projections.py           # Fetcher registry: CSV → DailyFantasyFuel → BlueCollarDFS → numberFire → FantasyPros → salary fallback
+├── kicker_model.py          # Game-environment kicker projections (default on)
+├── calibration.py           # DB-driven per-position projection corrections (--calibrate)
 ├── player_builder.py        # Dedup CPT/UTIL, projections attach, pydfs Player construction
 ├── showdown_optimizer.py    # Pulp MILP: CPT + 5 FLEX, cap, team-max, top-N diversity
 ├── classic_optimizer.py     # pydfs DK Football + stacking rules, lineup validation
@@ -147,7 +168,7 @@ nfl_dfs_optimizer/
 ├── hindsight_showdown.py    # Hindsight-optimal showdown benchmark (recorded actuals → exact MILP)
 ├── hindsight_classic.py     # Hindsight-optimal classic benchmark (recorded actuals → exact optimizer)
 ├── sample_projections.csv  # Example manual projection CSV
-└── tests/                   # 259 tests incl. MILP-vs-brute-force cross-check
+└── tests/                   # 294 tests incl. MILP-vs-brute-force cross-check
 ```
 
 ## Notes
