@@ -6,6 +6,9 @@ DK NFL Showdown rules:
 - Captain: 1.5x multiplier on BOTH points AND salary
 - Salary cap: $50,000
 - Max 5 players from one team (captain counts toward the team limit)
+- Max 1 kicker per team (house rule: DK lists every team's kicker *and*
+  punter/backup at the same K salary, and the kicker model gives them all
+  near-identical projections, so the MILP was stacking two GB kickers)
 
 The MILP formulation guarantees the optimal lineup under all constraints
 (and the top-N variants via added diversity constraints), unlike greedy
@@ -19,6 +22,7 @@ from utils import SALARY_CAP
 
 CAPTAIN_MULTIPLIER = 1.5
 MAX_PER_TEAM = 5  # DK NFL showdown rule (captain counts)
+MAX_KICKERS_PER_TEAM = 1  # house rule (see module docstring)
 
 
 def _solve_lineup(pool, salary_cap, allow_dst_captain=True, banned_lineups=None,
@@ -76,6 +80,14 @@ def _solve_lineup(pool, salary_cap, allow_dst_captain=True, banned_lineups=None,
         team_players = [p for p in pool if p['team'] == team]
         problem += lpSum(captain_vars[p['player_id']] + flex_vars[p['player_id']]
                          for p in team_players) <= MAX_PER_TEAM
+
+        # Max kickers per team (captain counts toward the kicker limit too)
+        team_kickers = [p for p in team_players
+                        if 'K' in (p.get('positions') or [])]
+        if len(team_kickers) > MAX_KICKERS_PER_TEAM:
+            problem += lpSum(
+                captain_vars[p['player_id']] + flex_vars[p['player_id']]
+                for p in team_kickers) <= MAX_KICKERS_PER_TEAM
 
     # Optional: DST cannot be captain
     if not allow_dst_captain:
@@ -201,10 +213,17 @@ def validate_lineup(lineup, salary_cap=SALARY_CAP):
         violations.append(f"Salary ${total_salary:,.0f} exceeds cap ${salary_cap:,.0f}")
 
     team_counts = {}
+    kicker_counts = {}
     for p in all_players:
         team_counts[p['team']] = team_counts.get(p['team'], 0) + 1
+        if 'K' in (p.get('positions') or []):
+            kicker_counts[p['team']] = kicker_counts.get(p['team'], 0) + 1
     for team, count in team_counts.items():
         if count > MAX_PER_TEAM:
             violations.append(f"{count} players from {team} (max {MAX_PER_TEAM})")
+    for team, count in kicker_counts.items():
+        if count > MAX_KICKERS_PER_TEAM:
+            violations.append(
+                f"{count} kickers from {team} (max {MAX_KICKERS_PER_TEAM})")
 
     return violations

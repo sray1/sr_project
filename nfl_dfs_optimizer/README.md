@@ -144,6 +144,7 @@ fitted on the DB's 14 recorded kicker-games (the slope is correlation-shrunk; th
 - Captain: 1.5x points AND salary
 - $50,000 cap
 - Max 5 players from one team (captain counts)
+- Max 1 kicker per team (house rule — DK lists every team's kicker and punter/backup at the same K salary, and the kicker model gives them near-identical projections, so the MILP was stacking two GB kickers; applies in `hindsight_showdown.py` too)
 
 ## Project structure
 

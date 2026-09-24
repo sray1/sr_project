@@ -1,10 +1,13 @@
 """Tests for the showdown pulp MILP optimizer."""
 
+from collections import Counter
+
 import pytest
 from itertools import combinations
 
 from showdown_optimizer import (
     generate_showdown_lineups, validate_lineup, MAX_PER_TEAM,
+    MAX_KICKERS_PER_TEAM,
 )
 
 
@@ -44,6 +47,14 @@ def brute_force_optimal(pool, salary_cap=50000):
             continue
         remaining = [p for p in pool if p['player_id'] != captain['player_id']]
         for combo in combinations(remaining, 5):
+            lineup = [captain, *combo]
+            team_counts = Counter(p['team'] for p in lineup)
+            if max(team_counts.values()) > MAX_PER_TEAM:
+                continue
+            kicker_counts = Counter(
+                p['team'] for p in lineup if 'K' in p['positions'])
+            if kicker_counts and max(kicker_counts.values()) > MAX_KICKERS_PER_TEAM:
+                continue
             total_salary = captain_salary + sum(p['salary'] for p in combo)
             if total_salary > salary_cap:
                 continue
@@ -103,6 +114,56 @@ class TestShowdownMILP:
         for p in [lineup['captain']] + lineup['flex']:
             team_counts[p['team']] = team_counts.get(p['team'], 0) + 1
         assert max(team_counts.values()) <= MAX_PER_TEAM
+
+    def test_kicker_limit_enforced(self):
+        # Two same-team kickers, cheap and high-projection: without the
+        # house rule the MILP stacks both
+        pool = small_pool() + [
+            make_player(11, 'K Pine', 'KC', 2000, 18.0,
+                        positions=('K', 'FLEX')),
+            make_player(12, 'K Cedar', 'KC', 2000, 18.0,
+                        positions=('K', 'FLEX')),
+        ]
+        lineup = generate_showdown_lineups(pool, n_lineups=1)[0]
+
+        kicker_counts = Counter(
+            p['team'] for p in [lineup['captain']] + lineup['flex']
+            if 'K' in p['positions'])
+        assert not kicker_counts or max(
+            kicker_counts.values()) <= MAX_KICKERS_PER_TEAM
+        # The rule bound: exactly one of the two KC kickers made it in
+        kc_kickers_in = sum(1 for p in [lineup['captain']] + lineup['flex']
+                           if p['player_id'] in (11, 12))
+        assert kc_kickers_in == 1
+        assert validate_lineup(lineup) == []
+
+    def test_optimal_matches_brute_force_with_kickers(self):
+        pool = small_pool() + [
+            make_player(11, 'K Pine', 'KC', 2000, 18.0,
+                        positions=('K', 'FLEX')),
+            make_player(12, 'K Cedar', 'KC', 2000, 18.0,
+                        positions=('K', 'FLEX')),
+        ]
+        lineups = generate_showdown_lineups(pool, n_lineups=1)
+        assert len(lineups) == 1
+        assert lineups[0]['total_projection'] == pytest.approx(
+            brute_force_optimal(pool))
+
+    def test_validate_lineup_catches_kicker_violation(self):
+        pool = small_pool() + [
+            make_player(11, 'K Pine', 'KC', 2000, 18.0,
+                        positions=('K', 'FLEX')),
+            make_player(12, 'K Cedar', 'KC', 2000, 18.0,
+                        positions=('K', 'FLEX')),
+        ]
+        players = {p['player_id']: p for p in pool}
+        broken = {
+            'captain': players[1],  # KC QB captain
+            'flex': [players[11], players[12],  # two KC kickers
+                     players[5], players[6], players[7]],
+        }
+        violations = validate_lineup(broken)
+        assert any('kicker' in v for v in violations)
 
     def test_multiple_lineups_are_distinct(self):
         pool = small_pool()
