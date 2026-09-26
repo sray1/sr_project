@@ -12,7 +12,7 @@ import consensus  # noqa: E402
 from race import Entry  # noqa: E402
 
 
-def _setup_race(entries, picks, results):
+def _setup_race(entries, picks, results, race_number=1):
     db.init_db()
     # Build a Race via db.save_race using a lightweight object
     class _R:
@@ -23,6 +23,7 @@ def _setup_race(entries, picks, results):
         distance = ""
         surface = ""
         race_type = ""
+    _R.race_number = race_number
     race_id = db.save_race(_R())
     db.save_entries(race_id, [e.to_dict() if isinstance(e, Entry) else e for e in entries])
     # Save picks grouped by source
@@ -81,6 +82,54 @@ def test_summary_aggregation():
     assert srcs["A"]["wins"] == 0
     out = accuracy.format_summary(rows)
     assert "Source" in out and "Win%" in out
+
+
+def test_consensus_snapshot_ignores_non_expert_ballots():
+    """Regression: the consensus snapshot must aggregate expert ballots only.
+
+    mlo_favorite and the consensus row itself used to vote in the snapshot
+    aggregate (a self-echo), drifting the snapshot away from the recorded
+    consensus pick. Here the experts favor Speed Star 8-5, but mlo_favorite
+    and a stored consensus row point at Midnight Run - the snapshot must
+    still say Speed Star."""
+    entries = [
+        Entry("1", "Speed Star", morning_line_odds=3.0, post_position=1),
+        Entry("2", "Lazy Day", morning_line_odds=5.0, post_position=2),
+        Entry("3", "Midnight Run", morning_line_odds=2.5, post_position=3),
+    ]
+    picks = [
+        {"source": "A", "horse_name": "Speed Star", "program_number": "1", "rank": 1},
+        {"source": "A", "horse_name": "Lazy Day", "program_number": "2", "rank": 2},
+        {"source": "B", "horse_name": "Speed Star", "program_number": "1", "rank": 1},
+        {"source": "B", "horse_name": "Midnight Run", "program_number": "3", "rank": 2},
+        # Non-expert ballots: chalk + the consensus row + common_underneath
+        {"source": "mlo_favorite", "horse_name": "Midnight Run", "program_number": "3", "rank": 1},
+        {"source": "consensus", "horse_name": "Midnight Run", "program_number": "3", "rank": 1},
+        {"source": "common_underneath", "horse_name": "Lazy Day", "program_number": "2", "rank": 1},
+    ]
+    results = [
+        {"program_number": "1", "horse_name": "Speed Star", "finish_position": 1},
+    ]
+    race_id = _setup_race(entries, picks, results, race_number=2)
+    snaps = accuracy.run_accuracy_checks(race_id)
+    cons = [s for s in snaps if s["source"] == "consensus"][0]
+    assert cons["top_pick"] == "Speed Star"
+    assert cons["hit_win"] == 1
+
+
+def test_consensus_snapshot_dropped_when_no_experts():
+    """No expert ballots -> no consensus snapshot, and stale rows are cleared."""
+    entries = [Entry("1", "Solo Star", morning_line_odds=2.0, post_position=1)]
+    picks = [
+        {"source": "mlo_favorite", "horse_name": "Solo Star", "program_number": "1", "rank": 1},
+        {"source": "consensus", "horse_name": "Solo Star", "program_number": "1", "rank": 1},
+    ]
+    results = [{"program_number": "1", "horse_name": "Solo Star", "finish_position": 1}]
+    race_id = _setup_race(entries, picks, results, race_number=3)
+    snaps = accuracy.run_accuracy_checks(race_id)
+    assert all(s["source"] != "consensus" for s in snaps)
+    left = [s for s in accuracy.run_accuracy_checks(race_id) if s["source"] == "consensus"]
+    assert left == []
 
 
 def test_no_results_returns_empty():

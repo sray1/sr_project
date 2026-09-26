@@ -13,6 +13,7 @@ from collections import defaultdict
 
 import db
 import consensus as consensus_mod
+from common_underneath import NON_EXPERT_SOURCES
 from race import normalize_horse_name
 
 
@@ -79,6 +80,11 @@ def run_accuracy_checks(race_id, conn=None):
             by_src[p["source"]].append(p)
 
         for src, ps in by_src.items():
+            if src == "consensus":
+                # The stored consensus row is a derived pick, not a source;
+                # it is scored from the expert aggregate below. Scoring it
+                # here too would write a duplicate consensus snapshot.
+                continue
             top = min(ps, key=lambda p: (p["rank"] if p["rank"] is not None else 99))
             fin = _resolve_finish(top, by_prog, by_name)
             hw, hp, hs = _hit_flags(fin)
@@ -88,8 +94,13 @@ def run_accuracy_checks(race_id, conn=None):
                 "hit_win": hw, "hit_place": hp, "hit_show": hs,
             })
 
-        # Consensus pick
-        result = consensus_mod.aggregate(entries, picks)
+        # Consensus pick: aggregate EXPERT ballots only. Baselines and the
+        # derived sources must not vote - a consensus row (or mlo_favorite,
+        # or common_underneath) feeding its own aggregate is a self-echo
+        # that drifts the snapshot away from the recorded consensus pick.
+        # Matches derived.save_derived, so snapshot and picks table agree.
+        expert = [p for p in picks if p["source"] not in NON_EXPERT_SOURCES]
+        result = consensus_mod.aggregate(entries, expert)
         if result["best_pick"]:
             bp = result["best_pick"]
             fin = _resolve_finish(bp, by_prog, by_name)
@@ -99,6 +110,11 @@ def run_accuracy_checks(race_id, conn=None):
                 "source": "consensus", "top_pick": bp["horse_name"], "finish": fin,
                 "hit_win": hw, "hit_place": hp, "hit_show": hs,
             })
+        else:
+            # No expert ballots -> no consensus. Drop any stale snapshot so
+            # re-scores can't leave an old pick on record.
+            c.execute("DELETE FROM accuracy_snapshots WHERE race_id = ? AND source = 'consensus'",
+                       (race_id,))
 
         if snapshot_rows:
             db.save_accuracy_snapshots(snapshot_rows, conn=c)

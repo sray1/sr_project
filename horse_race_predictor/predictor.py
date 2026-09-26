@@ -24,6 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import db
 import consensus as consensus_mod
+import common_underneath as cu
+import derived
 import manual_input
 import accuracy as accuracy_mod
 from race import Race, filter_active, normalize_horse_name
@@ -196,6 +198,36 @@ def cmd_sources(args):
 
 # ── reconcile subcommands (Task #6) ──────────────────────────────────────
 
+def cmd_derive(args):
+    """Recompute derived picks (consensus + common-underneath) for a stored race."""
+    if args.race_id:
+        race_id = args.race_id
+    else:
+        if not (args.track and args.race):
+            print("ERROR: --race-id, or --track and --race, is required.")
+            return
+        race = Race.from_inputs(args.track, args.race, args.date)
+        race_id = db.get_race_id(race.track_code, race.race_number, race.race_date)
+        if not race_id:
+            print(f"No stored race found for {race.track_code} R{race.race_number} on "
+                  f"{race.race_date}. Record the race and its expert picks first.")
+            return
+
+    res = derived.save_derived(race_id)
+    print(f"\n=== Derived picks: race_id {race_id} "
+          f"({res['num_experts']} expert source(s)) ===")
+    if res["consensus"]:
+        b = res["consensus"]
+        print(f"  consensus          : #{b['program_number']} {b['horse_name']}")
+    else:
+        print("  consensus          : no expert pick resolved")
+    if res["common_underneath"]:
+        u = res["common_underneath"][0]
+        print(f"  {cu.SOURCE_NAME}: #{u['program_number']} {u['horse_name']}")
+    else:
+        print(f"  {cu.SOURCE_NAME}: abstains (no ballot overlap or <{cu.MIN_SOURCES} sources)")
+
+
 def cmd_results(args):
     """Fetch or accept manual results for a race, then score source accuracy."""
     race = Race.from_inputs(args.track, args.race, args.date)
@@ -334,6 +366,13 @@ def build_parser():
     p_pred.add_argument("--include-ae", action="store_true",
                         help="Include Also-Eligible horses (they draw in only on a scratch).")
     p_pred.set_defaults(func=cmd_predict)
+
+    p_der = sub.add_parser("derive", help="Recompute derived picks (consensus + common-underneath) for a stored race.")
+    p_der.add_argument("--race-id", type=int, default=None, help="Stored race_id.")
+    p_der.add_argument("--track", default=None, help="Track code (with --race).")
+    p_der.add_argument("--race", type=int, default=None, help="Race number (with --track).")
+    p_der.add_argument("--date", default=None, help="Date YYYY-MM-DD (default: today).")
+    p_der.set_defaults(func=cmd_derive)
 
     p_res = sub.add_parser("results", help="Fetch official results and score accuracy.")
     p_res.add_argument("--track", required=True)
