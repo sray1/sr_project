@@ -4,7 +4,8 @@ import json
 import os
 
 from game_results import (_stat_number, parse_game_string, parse_dst_points,
-                          parse_kicker_points, parse_player_stats)
+                          parse_kicker_points, parse_player_stats,
+                          parse_two_point_points)
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures',
                        'espn_summary.json')
@@ -181,6 +182,105 @@ class TestParseKickerPoints:
     def test_empty_summary_returns_empty(self):
         assert parse_kicker_points({}) == {}
         assert parse_kicker_points({'boxscore': {}, 'scoringPlays': []}) == {}
+
+
+class TestTwoPointConversions:
+    """Successful 2-pt attempts parsed from the scored TD's text.
+
+    SEA@DEN 2026-10-15: Darnold's 2-pt pass to Shaheed was embedded in the
+    Holani rushing TD entry. Both passer and receiver earn 2.0 DK points.
+    """
+
+    def test_pass_credits_passer_and_receiver(self):
+        summary = {'scoringPlays': [
+            {'text': 'George Holani 1 Yd Rush (Sam Darnold Pass to '
+                     'Rashid Shaheed for Two-Point Conversion)',
+             'team': {'abbreviation': 'SEA'}}]}
+        credits = parse_two_point_points(summary)
+        assert credits['sam darnold']['fppg'] == 2.0
+        assert credits['sam darnold']['stats']['two_point_conversions'] == 1
+        assert credits['rashid shaheed']['fppg'] == 2.0
+        assert credits['rashid shaheed']['team'] == 'SEA'
+        # The TD scorer is NOT credited — his 6 pts come from the box score
+        assert 'george holani' not in credits
+
+    def test_run_credits_rusher_only(self):
+        summary = {'scoringPlays': [
+            {'text': 'Bo Nix 1 Yd Rush (Bo Nix Run for Two-Point '
+                     'Conversion)', 'team': {'abbreviation': 'DEN'}}]}
+        credits = parse_two_point_points(summary)
+        assert credits['bo nix']['fppg'] == 2.0
+        assert len(credits) == 1
+
+    def test_rush_variant_spelling(self):
+        # 'Rush' instead of 'Run'
+        summary = {'scoringPlays': [
+            {'text': 'Xavien Alford 2 Yd Run (Kobe Fritz Rush for '
+                     'Two-Point Conversion)', 'team': {'abbreviation': 'HOU'}}]}
+        assert parse_two_point_points(summary)['kobe fritz']['fppg'] == 2.0
+
+    def test_kick_parenthetical_not_matched(self):
+        # An XP attach "(Andy Borregales Kick)" must not look like a 2-pt
+        summary = {'scoringPlays': [
+            {'text': 'Eli Raridon 2 Yd pass from Drake Maye '
+                     '(Andy Borregales Kick)'}]}
+        assert parse_two_point_points(summary) == {}
+
+    def test_two_credits_same_player_accumulate(self):
+        summary = {'scoringPlays': [
+            {'text': 'A One 1 Yd Rush (Sam Darnold Pass to Sam Darnold '
+                     'for Two-Point Conversion)', 'team': {'abbreviation': 'SEA'}},
+            {'text': 'B Two 2 Yd Rush (Sam Darnold Pass to C Three for '
+                     'Two-Point Conversion)', 'team': {'abbreviation': 'SEA'}}]}
+        credits = parse_two_point_points(summary)
+        # Play 1 credits Darnold twice (passer + receiver) = 4.0,
+        # play 2 once more as passer = 6.0 total
+        assert credits['sam darnold']['fppg'] == 6.0
+        assert credits['sam darnold']['stats']['two_point_conversions'] == 3
+        assert credits['c three']['fppg'] == 2.0
+
+    def test_empty_summary_returns_empty(self):
+        assert parse_two_point_points({}) == {}
+        assert parse_two_point_points({'scoringPlays': []}) == {}
+
+    def test_merged_into_slate_results(self, monkeypatch):
+        import game_results
+        summary = {'boxscore': {'players': [], 'teams': []},
+                   'scoringPlays': [
+                       {'text': 'George Holani 1 Yd Rush (Sam Darnold Pass to '
+                                'Rashid Shaheed for Two-Point Conversion)',
+                        'team': {'abbreviation': 'SEA'}}]}
+        monkeypatch.setattr(game_results, 'fetch_scoreboard', lambda d: [{
+            'event_id': 1, 'away': 'SEA', 'home': 'DEN',
+            'away_score': 14, 'home_score': 17, 'completed': True}])
+        monkeypatch.setattr(game_results, 'fetch_summary', lambda eid: summary)
+        results = game_results.fetch_slate_results('20261015', ['SEA @ DEN'])
+        # No box-score rows: merge must still create the records
+        assert results['sam darnold']['fppg'] == 2.0
+        assert results['rashid shaheed']['fppg'] == 2.0
+
+    def test_merged_adds_to_box_score_line(self, monkeypatch):
+        import game_results
+        summary = {'boxscore': {'players': [
+            {'team': {'abbreviation': 'SEA'}, 'statistics': [
+                {'name': 'passing',
+                 'labels': ['C/ATT', 'YDS', 'AVG', 'TD', 'INT'],
+                 'athletes': [
+                     {'athlete': {'displayName': 'Sam Darnold', 'id': 1},
+                      'stats': ['27/51', '278', '5.5', '0', '2']}]}]}]},
+            'scoringPlays': [
+                {'text': 'George Holani 1 Yd Rush (Sam Darnold Pass to '
+                         'Rashid Shaheed for Two-Point Conversion)',
+                 'team': {'abbreviation': 'SEA'}}]}
+        monkeypatch.setattr(game_results, 'fetch_scoreboard', lambda d: [{
+            'event_id': 1, 'away': 'SEA', 'home': 'DEN',
+            'away_score': 14, 'home_score': 17, 'completed': True}])
+        monkeypatch.setattr(game_results, 'fetch_summary', lambda eid: summary)
+        results = game_results.fetch_slate_results('20261015', ['SEA @ DEN'])
+        # 278 pass yds (11.12) - 2 INT (2.0) = 9.12 from the box score,
+        # + 2.0 for the two-point pass = 11.12
+        assert results['sam darnold']['fppg'] == 11.12
+        assert results['sam darnold']['stats']['two_point_conversions'] == 1
 
 
 class TestReturnStats:

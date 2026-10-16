@@ -14,8 +14,10 @@ depend on FIELD GOAL DISTANCE, which every scoring play spells out:
 "Jason Myers 30 Yd Field Goal", "(Andy Borregales Kick)" for extra points).
 
 Known approximations (ESPN team totals lack them): blocked kicks, safeties,
-and DST extra-point/two-point returns are scored as 0, as are player-level
-two-point conversions (rare; counted against nobody, flagged as approximate).
+and DST extra-point/two-point returns are scored as 0. Player-level two-point
+conversions ARE credited (+2 to passer/receiver/rusher) — parsed from the
+scoring-plays text, where every successful attempt is embedded in the
+scored-TD entry's parenthetical.
 """
 
 import re
@@ -236,6 +238,14 @@ def parse_player_stats(summary):
 # so kicker points are exact — no distance aggregates needed.
 FG_PLAY = re.compile(r'^(.+?) (\d{1,3}) Yd Field Goal$')
 XP_PLAY = re.compile(r'\(([^()]+) Kick\)$')
+# Successful two-point attempts are embedded in the scored TD's text, e.g.
+# "George Holani 1 Yd Rush (Sam Darnold Pass to Rashid Shaheed for
+# Two-Point Conversion)" — a pass credits BOTH the passer and the receiver,
+# a run only the rusher. Failed attempts score 0 and never appear here.
+TWO_PT_PASS_PLAY = re.compile(r'\(([^()]+?) [Pp]ass to ([^()]+?) '
+                              r'for Two[- ]Point Conversion\)')
+TWO_PT_RUN_PLAY = re.compile(r'\(([^()]+?) [Rr](?:un|ush) '
+                             r'for Two[- ]Point Conversion\)')
 
 
 def parse_kicker_points(summary):
@@ -287,6 +297,48 @@ def parse_kicker_points(summary):
                       'extra_points': rec['extra_points']},
         }
     return results
+
+
+def parse_two_point_points(summary):
+    """Credit successful two-point conversions (DK: 2.0 pts each).
+
+    The box-score groups carry no two-point columns, but every SUCCESSFUL
+    attempt appears inside a scoring play's parenthetical (failed attempts
+    score 0 and never show up). Patterns verified live 2026-10:
+
+        "(Sam Darnold Pass to Rashid Shaheed for Two-Point Conversion)"
+        "(Bo Nix Run for Two-Point Conversion)"
+
+    A pass credits the passer AND the receiver; a run only the rusher.
+
+    Returns:
+        Dict {norm_name: {'fppg', 'team', 'stats'}} with fppg = 2.0 per
+        credit — the caller merges these into the player-stat records
+        (a player whose only contribution is a 2-pt has no box-score row).
+    """
+    credits = {}
+
+    def _credit(name, team):
+        key = normalize_name(name)
+        if not key:
+            return
+        rec = credits.setdefault(key, {'fppg': 0.0, 'team': team, 'stats': {}})
+        rec['fppg'] += 2.0
+        rec['stats']['two_point_conversions'] = \
+            rec['stats'].get('two_point_conversions', 0) + 1
+
+    for play in summary.get('scoringPlays') or []:
+        text = (play.get('text') or '').strip()
+        if 'Two' not in text and 'two' not in text:
+            continue
+        team = (play.get('team') or {}).get('abbreviation')
+        for m in TWO_PT_PASS_PLAY.finditer(text):
+            _credit(m.group(1), team)  # passer
+            _credit(m.group(2), team)  # receiver
+        m = TWO_PT_RUN_PLAY.search(text)
+        if m:
+            _credit(m.group(1), team)
+    return credits
 
 
 def parse_dst_points(summary):
@@ -407,6 +459,16 @@ def fetch_slate_results(date_compact, games):
         results.update(parse_player_stats(summary))
         results.update(parse_kicker_points(summary))
         results.update(parse_dst_points(summary))
+        # Two-point conversions: add to the player's line (a 2-pt catch is
+        # not a reception, so the receiver may have no box-score stats row)
+        for key, credit in parse_two_point_points(summary).items():
+            rec = results.setdefault(key, {'fppg': 0.0,
+                                            'team': credit['team'],
+                                            'stats': {}})
+            rec['fppg'] += credit['fppg']
+            rec['stats']['two_point_conversions'] = (
+                rec['stats'].get('two_point_conversions', 0)
+                + credit['stats']['two_point_conversions'])
         print(f"  {wanted[event_id]['away']} @ {wanted[event_id]['home']}: "
               f"{len(results)} players/DSTs accumulated")
 
