@@ -296,3 +296,75 @@ class TestSaveSnapshot:
         assert by_name['Kenneth Walker']['projected_fppg'] == 12.0
         # matched flags survive the rename (relabel keeps row source == key)
         assert all(r['matched'] == 1 for r in rows)
+    def test_deep_wr_ghosts_dropped_from_real_source_only(self, temp_db,
+                                                          monkeypatch):
+        """--save drops fallback-only ghost WRs from each real source's
+        rows and lineup; the fallback 'source' projects every WR by
+        construction, so it keeps its ghosts."""
+        draftables = [make_draftable(i, n, p, t, s) for i, n, p, t, s in [
+            (1, 'Drake Maye', 'QB', 'NE', 10000),
+            (2, 'Rhamondre Stevenson', 'RB', 'NE', 8400),
+            (3, 'Kyrese Rowan', 'WR', 'NE', 300),
+            (4, 'Sam Darnold', 'QB', 'SEA', 9400),
+            (5, 'Kenneth Walker', 'RB', 'SEA', 8600),
+            (6, 'Jaxon Smith', 'WR', 'SEA', 3400),
+            (7, 'Seahawks DST', 'DST', 'SEA', 2800),
+        ]]
+
+        monkeypatch.setattr(tracker, 'prepare_contest',
+                            lambda args: (FakeContest(), 'showdown',
+                                          draftables))
+        # Rowan is on no board: fallback-labeled even inside the DFF dict
+        monkeypatch.setattr(
+            tracker, 'get_source_projections',
+            lambda players, csv_path=None, week=None, allow_scrape=True,
+            kicker_model=True: {
+                'dailyfantasyfuel': {
+                    p['player_id']: (
+                        {'projection': 5.0, 'source': 'fallback'}
+                        if p['name'] == 'Kyrese Rowan'
+                        else {'projection': 12.0,
+                              'source': 'dailyfantasyfuel'})
+                    for p in players},
+                'fallback': {
+                    p['player_id']: (
+                        {'projection': 12.0, 'source': 'fallback'}
+                        if p['name'] == 'Kyrese Rowan'
+                        else {'projection': 10.0, 'source': 'fallback'})
+                    for p in players},
+            })
+
+        class Args:
+            csv = None
+            week = None
+            no_scrape = True
+            stack = 'qbwr'
+            no_dst_captain = True
+            no_kicker_model = False
+            calibrate = False
+
+        tracker.save_snapshot(Args())
+
+        conn = temp_db.get_connection()
+        rows = conn.execute(
+            "SELECT source, player_name FROM source_projections "
+            "ORDER BY source, player_name").fetchall()
+        lineups = conn.execute(
+            "SELECT source, players_json FROM lineup_predictions"
+        ).fetchall()
+        conn.close()
+
+        by_source = {}
+        for r in rows:
+            by_source.setdefault(r['source'], set()).add(r['player_name'])
+        assert 'Kyrese Rowan' not in by_source['dailyfantasyfuel']
+        assert 'Kyrese Rowan' in by_source['fallback']
+        assert len(by_source['dailyfantasyfuel']) == 6  # ghost row dropped
+        assert len(by_source['fallback']) == 7          # kept for fallback
+
+        lineup_names = {}
+        for r in lineups:
+            players = json.loads(r['players_json'])
+            lineup_names[r['source']] = {p['name'] for p in players}
+        assert 'Kyrese Rowan' not in lineup_names['dailyfantasyfuel']
+        assert 'Kyrese Rowan' in lineup_names['fallback']

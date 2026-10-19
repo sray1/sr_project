@@ -190,3 +190,85 @@ class TestPoolFilterPassThrough:
                  | {p['name']
                     for p in lineups['dailyfantasyfuel']['flex']})
         assert 'Harrison Butkerish' not in names
+
+
+class TestDeepWrFilterPerSource:
+    """Ghost WRs drop from real sources' builds; the fallback 'source'
+    projects every WR by construction, so it keeps its ghosts."""
+
+    GHOST = (9, 'Kyrese Rowan', 'WR', 'KC', 300)  # week-1 PS ghost, $300
+
+    def _sources_with_ghost(self, draftables, matched, real_name):
+        """Hand-built source dicts: ghost WR is always fallback-labeled
+        with a fat projection so the optimizer WANTS him when he's in
+        the pool; matched players get real projections, rest are low."""
+        ghost_pid = self.GHOST[0]
+        sources = {}
+        for source_name, matched_pids in ((real_name, matched),
+                                          ('fallback', set())):
+            proj = {}
+            for p in draftables:
+                pid = p['player_id']
+                if pid == ghost_pid:
+                    proj[pid] = {'projection': 8.0, 'source': 'fallback'}
+                elif pid in matched_pids:
+                    proj[pid] = {'projection': 10.0, 'source': source_name}
+                else:
+                    proj[pid] = {'projection': 2.0, 'source': 'fallback'}
+            sources[source_name] = proj
+        return sources
+
+    def _lineup_names(self, lineup, mode):
+        return set(lineup_player_names(lineup, mode))
+
+    def test_showdown_ghost_dropped_from_real_source_only(self):
+        draftables = make_showdown_draftables()
+        draftables.append(make_draftable(*self.GHOST))
+        sources = self._sources_with_ghost(draftables, {1, 6},
+                                           'dailyfantasyfuel')
+        lineups = build_lineups_per_source(
+            draftables, sources, 'showdown', drop_unprojected_wrs=True)
+        assert 'Kyrese Rowan' not in self._lineup_names(
+            lineups['dailyfantasyfuel'], 'showdown')
+        assert 'Kyrese Rowan' in self._lineup_names(
+            lineups['fallback'], 'showdown')
+
+    def test_filter_off_by_default_keeps_ghost_everywhere(self):
+        draftables = make_showdown_draftables()
+        draftables.append(make_draftable(*self.GHOST))
+        sources = self._sources_with_ghost(draftables, {1, 6},
+                                           'dailyfantasyfuel')
+        lineups = build_lineups_per_source(draftables, sources, 'showdown')
+        assert 'Kyrese Rowan' in self._lineup_names(
+            lineups['dailyfantasyfuel'], 'showdown')
+        assert 'Kyrese Rowan' in self._lineup_names(
+            lineups['fallback'], 'showdown')
+
+    def test_classic_source_with_no_real_wrs_skipped_not_ghost_filled(self):
+        # Classic needs 3 WRs: a source that lists none becomes
+        # infeasible once its ghost WRs drop — skipped with a note,
+        # never filled with fallback-only ghosts
+        specs = [
+            (1, 'Patrick Mahomes', 'QB', 'KC', 8000),
+            (2, 'Isiah Pacheco', 'RB', 'KC', 4400),
+            (3, 'Travis Kelce', 'TE', 'KC', 5200),
+            (4, 'Lamar Jackson', 'QB', 'BAL', 8500),
+            (5, 'Derrick Henry', 'RB', 'BAL', 7000),
+            (6, 'Mark Andrews', 'TE', 'BAL', 4600),
+            (7, 'Rashee Rice', 'WR', 'KC', 4800),
+            (8, 'Zay Flowers', 'WR', 'BAL', 5000),
+            (9, 'Kyrese Rowan', 'WR', 'KC', 300),
+            (10, 'Chiefs DST', 'DST', 'KC', 3000),
+            (11, 'Ravens DST', 'DST', 'BAL', 3200),
+        ]
+        draftables = [make_draftable(*spec) for spec in specs]
+        # 'dailyfantasyfuel' matches only the QBs: no WRs -> dropped
+        # pool can't fill 3 WR slots -> infeasible
+        sources = {
+            'dailyfantasyfuel': make_source_projections(draftables, {1: 25.0, 4: 24.0}),
+            'fallback': make_source_projections(draftables, {}),
+        }
+        lineups = build_lineups_per_source(
+            draftables, sources, 'classic', drop_unprojected_wrs=True)
+        assert 'dailyfantasyfuel' not in lineups
+        assert len(lineups['fallback']['players']) == 9

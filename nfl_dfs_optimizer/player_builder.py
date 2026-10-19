@@ -18,6 +18,7 @@ from pydfs_lineup_optimizer.player import Player as PyDFSPlayer, GameInfo
 
 from projections import (get_dff_out_names, get_dff_team_mismatches,
                          normalize_dst_name, normalize_name)
+from starter_kickers import filter_nonstarter_kickers
 
 MIN_SALARY = 300  # DK NFL minimum salary ($300)
 
@@ -58,9 +59,11 @@ def filter_unprojected_wrs(pool):
     was picked at $3,000 over real WRs). Projection boards (DFF, CSV,
     FantasyPros, BlueCollar) cover genuine WR3-or-better roles; injury
     risers get projected once injuries push them up the depth chart, so
-    this filter keeps them. Applied to WRs only, and never to the
-    per-source comparison builds (the fallback 'source' projects every
-    WR by construction).
+    this filter keeps them. Applied to WRs only. The per-source
+    comparison builds apply it per source too, EXCEPT for the fallback
+    'source' itself — it projects every WR by construction, so filtering
+    it would empty its WR pool (build_lineups_per_source handles the
+    exemption).
 
     Returns:
         (kept, dropped) pool entries
@@ -186,7 +189,8 @@ def build_auto_exclusions(players, manual_exclude=None, allow_scrape=True):
 
 def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
                      drop_backup_qbs=True, exclude=None, verbose=True,
-                     drop_unprojected_wrs=False):
+                     drop_unprojected_wrs=False,
+                     drop_nonstarter_kickers=False):
     """Build the deduplicated, projected player pool.
 
     Args:
@@ -204,9 +208,17 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
             per-source pool builds so the note prints once)
         drop_unprojected_wrs: Drop WRs whose projection is salary-fallback
             (no projection source lists them: practice squad / WR4+ / not
-            on the fantasy radar). Default False — the per-source
-            comparison builds must NOT use it (the fallback 'source'
-            would drop every WR); the main pipeline passes True.
+            on the fantasy radar). Default False — callers that build ONE
+            pool for one source (analyzer main pipeline) pass True; the
+            per-source comparison builds pass True per source too, with
+            build_lineups_per_source exempting the fallback 'source'
+            (it projects every WR, so the filter would empty its pool).
+        drop_nonstarter_kickers: Drop DK-listed kickers who are not their
+            team's active placekicker (punters, practice-squad kickers —
+            DK lists them under K at the same salary; resolved via the
+            ESPN roster API, best-effort). Default False — tests and
+            hindsight benchmarks pass nothing; the analyzer and tracker
+            pipelines pass True.
 
     Returns:
         List of player dicts with:
@@ -259,6 +271,14 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
             names = ', '.join(f"{p['name']} ({p['team']})" for p in backup_qbs)
             print(f"Backup QB filter: dropped {len(backup_qbs)} "
                   f"({names}) - kept each team's top-salaried QB")
+
+    if drop_nonstarter_kickers:
+        pool, nonstarter = filter_nonstarter_kickers(pool)
+        if nonstarter and verbose:
+            names = ', '.join(f"{p['name']} ({p['team']})" for p in nonstarter)
+            print(f"Non-starter K filter: dropped {len(nonstarter)} "
+                  f"({names}) - kept each team's active placekicker "
+                  f"per the ESPN roster")
 
     if drop_unprojected_wrs:
         pool, deep_wrs = filter_unprojected_wrs(pool)

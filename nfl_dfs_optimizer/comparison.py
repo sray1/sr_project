@@ -37,7 +37,9 @@ def baseline_source_name(source_projections):
 
 def build_lineups_per_source(draftables, source_projections, mode,
                              stack_rule='qbwr', allow_dst_captain=True,
-                             drop_backup_qbs=True, exclude=None):
+                             drop_backup_qbs=True, exclude=None,
+                             drop_nonstarter_kickers=False,
+                             drop_unprojected_wrs=False):
     """Build the top lineup for each source with the same exact optimizer.
 
     Args:
@@ -48,6 +50,15 @@ def build_lineups_per_source(draftables, source_projections, mode,
         stack_rule: Classic stacking rule (same choices as analyzer --stack)
         allow_dst_captain: Showdown flag (same as analyzer --no-dst-captain)
         drop_backup_qbs: Pool filter (same as analyzer --keep-backup-qbs)
+        drop_nonstarter_kickers: Pool filter (same as analyzer
+                                  --keep-punters); False by default so
+                                  tests don't hit the ESPN roster API —
+                                  run_comparison and the tracker pass True
+        drop_unprojected_wrs: Deep-WR pool filter (same as analyzer
+                                  --keep-deep-wrs). Applied to every source
+                                  EXCEPT 'fallback', which projects every
+                                  WR by construction — filtering it would
+                                  empty its WR pool
         exclude: Pool filter (same as analyzer --exclude)
 
     Returns:
@@ -57,9 +68,15 @@ def build_lineups_per_source(draftables, source_projections, mode,
     lineups_by_source = {}
     filter_note_printed = False  # print pool-filter drops once, not per source
     for source, projections in source_projections.items():
+        # Real sources drop fallback-only ghost WRs; the fallback 'source'
+        # projects every WR by construction, so the filter is skipped for it
+        drop_wrs = drop_unprojected_wrs and source != 'fallback'
         try:
             pool = build_player_pool(draftables, projections,
                                      drop_backup_qbs=drop_backup_qbs,
+                                     drop_nonstarter_kickers=(
+                                         drop_nonstarter_kickers),
+                                     drop_unprojected_wrs=drop_wrs,
                                      exclude=exclude,
                                      verbose=not filter_note_printed)
             filter_note_printed = True
@@ -200,8 +217,8 @@ def run_comparison(args, contest, mode, draftables):
 
     Args:
         args: Parsed analyzer CLI args (csv, week, no_scrape, stack,
-              no_dst_captain, exclude, keep_backup_qbs, no_kicker_model,
-              calibrate are honored)
+              no_dst_captain, exclude, keep_backup_qbs, keep_deep_wrs,
+              keep_punters, no_kicker_model, calibrate are honored)
         contest: Selected contest object
         mode: 'showdown' or 'classic'
         draftables: Raw draftables from dk_client.fetch_draftables
@@ -231,6 +248,8 @@ def run_comparison(args, contest, mode, draftables):
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
         drop_backup_qbs=not getattr(args, 'keep_backup_qbs', False),
+        drop_nonstarter_kickers=not getattr(args, 'keep_punters', False),
+        drop_unprojected_wrs=not getattr(args, 'keep_deep_wrs', False),
         exclude=exclude)
 
     if not lineups_by_source:

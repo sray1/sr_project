@@ -70,13 +70,17 @@ def save_snapshot(args):
                   f"(raw snapshots kept for comparison)")
 
     drop_backup_qbs = not getattr(args, 'keep_backup_qbs', False)
+    drop_nonstarter_kickers = not getattr(args, 'keep_punters', False)
+    drop_unprojected_wrs = not getattr(args, 'keep_deep_wrs', False)
     exclude = build_auto_exclusions(
         draftables, getattr(args, 'exclude', None),
         allow_scrape=not args.no_scrape)
     lineups_by_source = build_lineups_per_source(
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
-        drop_backup_qbs=drop_backup_qbs, exclude=exclude)
+        drop_backup_qbs=drop_backup_qbs, exclude=exclude,
+        drop_nonstarter_kickers=drop_nonstarter_kickers,
+        drop_unprojected_wrs=drop_unprojected_wrs)
 
     if not lineups_by_source:
         print("No source produced a feasible lineup — nothing to save")
@@ -92,8 +96,16 @@ def save_snapshot(args):
         # One row per deduped pool player per source (same filters the
         # lineups were built with, so DB rows match the lineup pool).
         # verbose=False: the filter note printed during lineup building.
+        # Ghost-WR exemption mirrors build_lineups_per_source: the
+        # fallback 'source' projects every WR, so filtering it would
+        # empty its WR rows.
         pool = build_player_pool(draftables, projections,
                                  drop_backup_qbs=drop_backup_qbs,
+                                 drop_nonstarter_kickers=(
+                                     drop_nonstarter_kickers),
+                                 drop_unprojected_wrs=(
+                                     drop_unprojected_wrs
+                                     and source != 'fallback'),
                                  exclude=exclude, verbose=False)
         for player in pool:
             db.save_source_projection(contest.contest_id, source, player)
@@ -322,6 +334,18 @@ def parse_args():
     parser.add_argument('--keep-backup-qbs', action='store_true',
                         help="Do NOT auto-drop backup QBs (default: keep "
                              "only each team's top-salaried QB)")
+    parser.add_argument('--keep-deep-wrs', action='store_true',
+                        help="Do NOT auto-drop WRs that no projection source "
+                             "lists (default: fallback-only WRs - practice "
+                             "squad / WR4+ ghosts DK still lists on the "
+                             "slate - are dropped; the salary-fallback "
+                             "'source' itself keeps its full WR pool)")
+    parser.add_argument('--keep-punters', action='store_true',
+                        help="Do NOT auto-drop kickers who are not their "
+                             "team's active placekicker (default: punters "
+                             "and practice-squad kickers - which DK lists "
+                             "under K at the same salary - are dropped via "
+                             "the ESPN roster API)")
     parser.add_argument('--no-kicker-model', action='store_true',
                         help="Opt out of the game-environment kicker model "
                              "(see kicker_model.py); kickers fall back to "

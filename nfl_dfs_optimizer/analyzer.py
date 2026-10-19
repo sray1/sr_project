@@ -145,6 +145,7 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
     pool = build_player_pool(draftables, player_projections,
                              drop_backup_qbs=not args.keep_backup_qbs,
                              drop_unprojected_wrs=not args.keep_deep_wrs,
+                             drop_nonstarter_kickers=not args.keep_punters,
                              exclude=build_auto_exclusions(
                                  draftables, args.exclude,
                                  allow_scrape=not args.no_scrape))
@@ -224,6 +225,12 @@ def parse_args():
                         help="Do NOT auto-drop WRs that no projection source "
                              "lists (default: drop fallback-only WRs - practice "
                              "squad / WR4+ players DK still shows on the slate)")
+    parser.add_argument('--keep-punters', action='store_true',
+                        help="Do NOT auto-drop kickers who are not their "
+                             "team's active placekicker (default: punters and "
+                             "practice-squad kickers - which DK lists under K "
+                             "at the same salary - are dropped via the ESPN "
+                             "roster API)")
     parser.add_argument('--compare', action='store_true',
                         help="Compare optimal lineups across ALL projection "
                              "sources (DailyFantasyFuel, BlueCollarDFS, CSV, "
