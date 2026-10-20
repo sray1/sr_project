@@ -20,7 +20,7 @@ so per-source comparison builds don't re-fetch.
 """
 
 from game_results import _fetch_json
-from projections import normalize_name
+from projections import TEAM_ABBR_ALIASES, normalize_name
 
 ESPN_TEAMS_URL = ("https://site.api.espn.com/apis/site/v2/"
                   "sports/football/nfl/teams")
@@ -36,7 +36,12 @@ _roster_cache = {}  # {team_abbr: set(norm_names)}; empty set = unresolved
 
 
 def get_team_ids():
-    """{abbreviation: ESPN team id}, fetched once per process."""
+    """{abbreviation: ESPN team id}, fetched once per process.
+
+    Keys use DK's spellings: where ESPN abbreviates differently (WSH vs
+    DK's WAS), DK's form is aliased to ESPN's entry via
+    projections.TEAM_ABBR_ALIASES (whose direction is {ESPN: DK}).
+    """
     global _team_id_map
     if _team_id_map is not None:
         return _team_id_map
@@ -47,6 +52,9 @@ def get_team_ids():
             team = entry.get('team') or {}
             if team.get('abbreviation') and team.get('id'):
                 mapping[team['abbreviation']] = str(team['id'])
+    for espn_abbr, dk_abbr in TEAM_ABBR_ALIASES.items():
+        if dk_abbr not in mapping and espn_abbr in mapping:
+            mapping[dk_abbr] = mapping[espn_abbr]
     _team_id_map = mapping
     return mapping
 
@@ -72,7 +80,10 @@ def get_starting_kickers(team_abbrevs):
         names = set()
         team_id = ids.get(abbr)
         if team_id:
-            roster = _fetch_json(ESPN_ROSTER_URL.format(team_id=team_id), {})
+            # limit param: some teams' bare roster URLs 404 (SF, week 6
+            # WAS @ SF — GB/DAL work fine either way)
+            roster = _fetch_json(ESPN_ROSTER_URL.format(team_id=team_id),
+                                 {'limit': 100})
             for group in (roster or {}).get('athletes') or []:
                 if group.get('position') not in ACTIVE_GROUPS:
                     continue

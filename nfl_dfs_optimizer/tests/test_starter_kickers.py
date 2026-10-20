@@ -189,3 +189,37 @@ class TestBuildPlayerPoolIntegration:
         draftables = [_k('Lenny Krieg', 'GB', player_id=2)]
         pool = build_player_pool(draftables, {})
         assert {p['name'] for p in pool} == {'Lenny Krieg'}
+
+class TestAbbreviationAndFetchQuirks:
+    def test_dk_spelling_aliases_to_espn_entry(self, monkeypatch):
+        # ESPN abbreviates Washington 'WSH'; DK says 'WAS' — the alias
+        # table (direction {ESPN: DK}) must bridge them
+        teams = {'sports': [{'leagues': [{'teams': [
+            {'team': {'abbreviation': 'WSH', 'id': 28}}]}]}]}
+        _mock_fetch(monkeypatch, {'teams': teams,
+                                  '/28/roster': DAL_ROSTER})
+        assert get_team_ids()['WAS'] == '28'
+        assert get_starting_kickers(['WAS']) == {'WAS': {'brandon aubrey'}}
+
+    def test_espn_spelling_kept_when_dk_matches_directly(self, monkeypatch):
+        # No alias collision: a team ESPN itself lists as 'WAS' wins
+        # over the alias bridge
+        teams = {'sports': [{'leagues': [{'teams': [
+            {'team': {'abbreviation': 'WAS', 'id': 99}},
+            {'team': {'abbreviation': 'WSH', 'id': 28}}]}]}]}
+        _mock_fetch(monkeypatch, {'teams': teams})
+        assert get_team_ids()['WAS'] == '99'
+
+    def test_roster_fetch_carries_limit_param(self, monkeypatch):
+        # SF's bare roster URL 404s (week 6 WAS @ SF); the limit param
+        # is what makes it consistent across teams
+        seen_params = []
+
+        def fake_fetch(url, params, timeout=20):
+            if 'roster' not in url:
+                return TEAMS_RESPONSE
+            seen_params.append(params)
+            return GB_ROSTER
+        monkeypatch.setattr(starter_kickers, '_fetch_json', fake_fetch)
+        get_starting_kickers(['GB'])
+        assert seen_params == [{'limit': 100}]
