@@ -1,4 +1,4 @@
-"""Tests for the game-environment kicker model (kicker_model.py)."""
+"""Tests for the flat-prior kicker model (kicker_model.py)."""
 
 import pytest
 
@@ -16,25 +16,24 @@ class TestEstimate:
     def test_center_is_base(self):
         assert estimate_kicker_projection(KICKER_ENV_CENTER) == KICKER_BASE
 
-    def test_high_scoring_environment_tilts_up(self):
-        # KC's 139.4 offensive points (IND@KC week 2) -> base + 0.016*(139.4-88.7)
-        expected = KICKER_BASE + KICKER_ENV_SLOPE * (139.4 - KICKER_ENV_CENTER)
-        assert estimate_kicker_projection(139.4) == pytest.approx(expected, abs=0.01)
-        assert estimate_kicker_projection(139.4) > KICKER_BASE
+    def test_environment_tilt_is_gone(self):
+        # Refit on the corrected 42-kicker-game history found no
+        # environment signal (r=-0.13) — KC's 139.4 offensive points
+        # (IND@KC week 2) no longer move the projection, and neither do
+        # NYG's 33.0 (NYG@LAR week 2)
+        assert estimate_kicker_projection(139.4) == KICKER_BASE
+        assert estimate_kicker_projection(33.0) == KICKER_BASE
 
-    def test_poor_environment_tilts_down(self):
-        # NYG's 33.0 offensive points (NYG@LAR week 2)
-        assert estimate_kicker_projection(33.0) < KICKER_BASE
-        assert estimate_kicker_projection(33.0) >= KICKER_MIN
-
-    def test_clamped(self):
+    def test_clamps_inert_on_flat_model(self):
+        # The clamps only bind if a future refit restores a tilt; at
+        # slope 0 every environment maps to the base
         assert estimate_kicker_projection(0) >= KICKER_MIN
-        assert estimate_kicker_projection(100000) == KICKER_MAX
-        assert estimate_kicker_projection(-1000) == KICKER_MIN
+        assert estimate_kicker_projection(100000) == KICKER_BASE
+        assert estimate_kicker_projection(-1000) == KICKER_BASE
 
     def test_fit_sample_sanity(self):
-        # The model's core promise: a fair ~7-point kicker, not the ~11.2
-        # the salary curve hands a $4,600 kicker
+        # The model's core promise: a fair ~7.5-point kicker, not the
+        # ~11.2 the salary curve hands a $4,600 kicker
         mid = estimate_kicker_projection(90)
         assert 6.0 < mid < 9.0
 
@@ -74,30 +73,22 @@ class TestApplyKickerModel:
             assert attached[pid]['source'] == 'kicker_model'
             assert attached[pid]['projection'] != 11.0
 
-    def test_team_sum_is_own_team_offense_only(self):
+    def test_all_kickers_get_flat_prior(self):
         pool = self.pool()
         attached = self.attached(pool)
         apply_kicker_model(pool, attached)
 
-        # KC kicker: 4 offensive teammates (DST excluded) x 10.0 = 40
-        # IND kicker: Taylor only = 10
-        kc = KICKER_BASE + KICKER_ENV_SLOPE * (40.0 - KICKER_ENV_CENTER)
-        ind = KICKER_BASE + KICKER_ENV_SLOPE * (10.0 - KICKER_ENV_CENTER)
-        assert attached[5]['projection'] == pytest.approx(kc, abs=0.01)
-        assert attached[8]['projection'] == pytest.approx(ind, abs=0.01)
-        assert attached[5]['projection'] > attached[8]['projection']
-
-    def test_dst_excluded_from_environment(self):
-        pool = self.pool()
-        attached = self.attached(pool)
-        apply_kicker_model(pool, attached)
-        # If the DST counted, the KC sum would be 50, not 40
-        kc = KICKER_BASE + KICKER_ENV_SLOPE * (40.0 - KICKER_ENV_CENTER)
-        assert attached[5]['projection'] == pytest.approx(kc, abs=0.01)
+        # Refit found no environment signal: every kicker gets the flat
+        # prior regardless of his team's offense. The per-team offense
+        # sum is still computed (and DSTs excluded from it), so a future
+        # refit that restores a tilt needs no interface change
+        assert attached[5]['projection'] == pytest.approx(KICKER_BASE, abs=0.01)
+        assert attached[8]['projection'] == pytest.approx(KICKER_BASE, abs=0.01)
 
     def test_board_matched_kicker_overridden(self):
         # DFF's own kicker projections were WORSE than this model on the
-        # fit sample (+2.4 over actual, 6.6 MAE) — they get replaced too
+        # corrected history (+3.4 over actual, 5.2 MAE) — they get
+        # replaced too
         pool = self.pool()
         attached = self.attached(pool, kicker_source='dailyfantasyfuel')
         replaced = apply_kicker_model(pool, attached)

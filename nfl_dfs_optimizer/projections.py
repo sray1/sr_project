@@ -933,7 +933,7 @@ def _attach_source(players, projections, source_name, kicker_model=True):
     """Resolve every player against one source, salary-fallback for misses.
 
     Args:
-        kicker_model: Replace kicker projections with the game-environment
+        kicker_model: Replace kicker projections with the flat-prior
             model (see kicker_model.py) — board and salary-curve kicker
             projections both proved less accurate than the model.
 

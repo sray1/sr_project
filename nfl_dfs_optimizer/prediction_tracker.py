@@ -347,7 +347,7 @@ def parse_args():
                              "under K at the same salary - are dropped via "
                              "the ESPN roster API)")
     parser.add_argument('--no-kicker-model', action='store_true',
-                        help="Opt out of the game-environment kicker model "
+                        help="Opt out of the flat-prior kicker model "
                              "(see kicker_model.py); kickers fall back to "
                              "board projections / the salary curve")
     parser.add_argument('--calibrate', action='store_true',

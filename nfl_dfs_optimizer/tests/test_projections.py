@@ -177,7 +177,7 @@ class TestGetPlayerProjections:
 
 
 class TestKickerModelIntegration:
-    """The game-environment kicker model is default-on in both resolution
+    """The flat-prior kicker model is default-on in both resolution
     layers (see kicker_model.py)."""
 
     @staticmethod
@@ -217,8 +217,10 @@ class TestKickerModelIntegration:
                                         csv_path=str(csv_file))
         assert result[3] == {'projection': 9.5, 'source': 'csv'}
 
-    def test_per_source_runs_model_their_own_environments(self, monkeypatch):
-        # Each source's kicker comes from that source's own offense numbers
+    def test_per_source_runs_still_apply_the_model(self, monkeypatch):
+        # The kicker model runs per source (kickers relabeled), though
+        # the refit made it flat, so both sources' kickers now land on
+        # the same 7.52 prior regardless of their offense numbers
         monkeypatch.setattr('projections.run_all_scrape_fetchers',
                             lambda week=None, slate_games=None,
                             slate_date=None:
@@ -227,10 +229,8 @@ class TestKickerModelIntegration:
         assert set(sources) == {'numberfire', 'fallback'}
         for name, source in sources.items():
             assert source[3]['source'] == 'kicker_model'
-        # numberfire's Mahomes (25.0) vs the fallback curve (25.12): the
-        # modeled kickers differ slightly
         assert (sources['numberfire'][3]['projection']
-                != sources['fallback'][3]['projection'])
+                == sources['fallback'][3]['projection'])
 
     def test_source_projections_opt_out(self, monkeypatch):
         monkeypatch.setattr('projections.run_all_scrape_fetchers',

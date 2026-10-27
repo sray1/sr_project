@@ -70,7 +70,7 @@ Output is printed and saved to `nfl_dfs_optimizer/output/` (gitignored). The acc
 | `--keep-deep-wrs` | flag | off | Opt OUT of the deep-WR filter. By default WRs no projection source lists (fallback-only) are dropped from the pool — practice squad / WR4+ players DK still shows on the slate get fantasy-relevant projections from real boards, and injury risers get projected once promoted, so unlisted = ghost. Applies to the main pipeline AND to each real source's `--compare` / `--save` build (a week-6 classic slate put 2 zero-actual ghosts in every source lineup, ~15–20 lost points each); the salary-fallback 'source' itself is exempt — it projects every WR by construction, so filtering it would empty its WR pool |
 | `--keep-punters` | flag | off | Opt OUT of the non-starter-kicker filter. By default DK-listed kickers who aren't their team's active placekicker are dropped — DK lists punters and practice-squad kickers under K at the same salary, and the kicker model gives them near-identical projections, so the optimizer treats them as interchangeable starters (DAL @ GB listed active PK Trey Smack and PS kicker Lenny Krieg, both $4,800 / 11.78). The starter is resolved via ESPN's roster API (`specialTeam` + position `PK`); any fetch failure or name mismatch keeps the whole team's kickers |
 | `--compare` | flag | — | Build one optimal lineup per projection source and print side-by-side overlap/differences (see below) |
-| `--no-kicker-model` | flag | off | Opt OUT of the game-environment kicker model (see below). By default every kicker's projection is modeled from his team's offensive projections — both board and salary-curve kicker values proved less accurate than the model (DFF kicker MAE 5.2, +3.4 over actual across 42 kicker-games; the salary curve hands a $4,600 kicker 11.2 points) |
+| `--no-kicker-model` | flag | off | Opt OUT of the flat-prior kicker model (see below). By default every kicker gets the same 7.52-point projection — both board and salary-curve kicker values proved less accurate than the model (DFF kicker MAE 5.2, +3.4 over actual across 42 kicker-games; the salary curve hands a $4,600 kicker 11.2 points) |
 | `--calibrate` | flag | — | Adjust projections by each source's per-position bias from the accuracy DB — mean(actual − projected) over matched rows, gated at n ≥ 30 per (source, position); small samples are skipped with a note |
 | `--unique-captains` | flag | — | Showdown: every lineup gets a DIFFERENT captain (the optimal lineup per captain candidate) instead of the usual ≥2-player diversity. The hindsight-optimal captain is rarely the chalk QB (2 of the first 7 showdowns), so this surfaces each captain's best build |
 
@@ -117,13 +117,13 @@ ESPN stat cells are read by label name (ESPN appends box-score columns after gam
 
 Two refinements built from the accuracy DB's own history (both default where stated; both opt-out):
 
-**Kicker model (`kicker_model.py`, default ON)** — no board ranks kickers well: across the first 9 graded contests, DFF's own kicker projections ran +2.4 over actual with 6.6 MAE, and unlisted kickers fall to the salary curve (11.2 points for any $4,600 kicker). Yet kickers keep earning hindsight-optimal lineup spots (both kickers made the BAL @ ATL week-3 hindsight optimum). Every kicker is instead projected from his team's offensive environment:
+**Kicker model (`kicker_model.py`, default ON)** — no board ranks kickers well: DFF's own kicker projections run +3.4 over actual with 5.2 MAE across the corrected 42-kicker-game history, and unlisted kickers fall to the salary curve (11.2 points for any $4,600 kicker). Yet kickers keep earning hindsight-optimal lineup spots (both kickers made the BAL @ ATL week-3 hindsight optimum). Every kicker instead gets a flat prior:
 
 ```
-kicker = 7.36 + 0.016 * (own team's projected DK points at QB/RB/WR/TE - 88.7), clamped [3, 14]
+kicker = 7.52, clamped [3, 14]
 ```
 
-fitted on the DB's 14 recorded kicker-games (the slope is correlation-shrunk; the model's MAE 3.82 beat DFF's 6.6 on the same sample — DFF's kicker bias stands at +3.4 over actual across the corrected 42-kicker-game history, and the fit predates the 3+ FGs-bonus removal, so a refit is pending). Per-source runs (`--compare`, `--save`) model each source's kickers from that source's own offensive projections. Manual CSV kicker projections are never overridden. `--no-kicker-model` opts out (analyzer + tracker).
+The original model tilted kickers by their team's projected offensive environment (7.36 + 0.016 × env, fitted on 14 week-1/2 kicker-games, r = +0.32), but the refit on the full corrected history found the signal did not survive more data (r = −0.13 at n = 42) — so the tilt is gone and the model is an honest flat prior, which is also the best predictor on the sample (MAE 3.58 vs 5.16 for DFF's board kickers). The per-source environment is still computed (per-source runs keep their per-source interface), so a future refit that finds a real signal changes constants only. Manual CSV kicker projections are never overridden. `--no-kicker-model` opts out (analyzer + tracker).
 
 **Calibration (`calibration.py`, `--calibrate`)** — reads each source's per-position bias from `nfl_accuracy.db` (mean(actual − projected) over *matched* rows, n ≥ 30 gate per source-position) and adds it to projections before optimizing. Current DFF corrections: TE +0.91, WR +0.20, QB +0.12, RB −0.08, DST −0.05; positions under the gate (e.g. K at n=6) are skipped with a printed note. In `analyzer.py`/`--compare` the corrections apply in place; in `prediction_tracker.py --save --calibrate` the calibrated snapshot is saved as `{source}+cal` (matched flags preserved), so `--summary` tracks raw and calibrated accuracy side by side — re-runs never overwrite the raw snapshot.
 
@@ -171,7 +171,7 @@ nfl_dfs_optimizer/
 ├── hindsight_showdown.py    # Hindsight-optimal showdown benchmark (recorded actuals → exact MILP)
 ├── hindsight_classic.py     # Hindsight-optimal classic benchmark (recorded actuals → exact optimizer)
 ├── sample_projections.csv  # Example manual projection CSV
-└── tests/                   # 321 tests incl. MILP-vs-brute-force cross-check
+└── tests/                   # 322 tests incl. MILP-vs-brute-force cross-check
 ```
 
 ## Notes

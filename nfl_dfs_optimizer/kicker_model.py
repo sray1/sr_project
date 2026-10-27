@@ -1,5 +1,5 @@
 """
-Kicker projection model: game-environment-based kicker DK points.
+Kicker projection model: a fair flat prior for kicker DK points.
 
 Why this exists: no projection board ranks kickers well. Across the 42
 kicker-games recorded in nfl_accuracy.db (weeks 1-7, 2026, after the
@@ -11,26 +11,26 @@ hindsight-optimal lineup spots (both kickers made the BAL @ ATL
 hindsight optimum), so kickers deserve a fair projection instead of an
 inflated salary-curve one.
 
-Model (fitted on 14 kicker-games from weeks 1-2 — three of those
-actuals carried the since-removed +3 bonus, so a refit on the
-corrected history is a pending refinement):
-    kicker = 7.36 + 0.016 * (team_offense_points - 88.7), clamped [3, 14]
+Model (refit on the corrected 42-kicker-game history):
+    kicker = 7.52, clamped [3, 14]
 
-team_offense_points is the sum of the kicker's OWN team's projected DK
-points across QB/RB/WR/TE on the slate (the same projections the lineup
-will be built from). The raw OLS fit was kicker = 2.91 + 0.050 * off_sum
-with r = 0.315; because the environment signal is weak, the slope is
-shrunk by the correlation (0.050 * 0.315 ~= 0.016) — the shrunken model
-keeps most of the flat-mean's accuracy (MAE 3.82 vs 3.80 for a flat 7.36
-and 3.98 for the raw fit, on the fit sample) while still tilting kickers
-up in high-scoring environments and down in poor ones.
+The original fit (14 kicker-games, weeks 1-2) found a game-environment
+tilt — kicker = 7.36 + 0.016 * (team offense projected - 88.7), r =
++0.32 — but it did not survive more data: at n=42 the correlation
+between a kicker's actual points and his team's projected offensive
+total is r = -0.13 (raw OLS slope -0.05). The flat mean is also the
+best predictor on the full sample (MAE 3.58 vs 3.59 for a tiny shrunk
+tilt and 5.16 for DFF's board), so the tilt is gone and the model is
+an honest flat prior. team_offense_points is still accepted (and still
+computed per source in apply_kicker_model) so the interface is
+unchanged; a future refit that finds a real signal can restore it.
 
 Manual CSV projections always win: a hand-entered kicker beats the model.
 """
 
-KICKER_BASE = 7.36            # mean kicker DK points, fit sample (n=14)
-KICKER_ENV_SLOPE = 0.016       # correlation-shrunk slope (0.0502 * r=0.315)
-KICKER_ENV_CENTER = 88.7      # mean team offensive DK points, fit sample
+KICKER_BASE = 7.52            # mean kicker DK points, corrected history (n=42)
+KICKER_ENV_SLOPE = 0.0         # refit found no environment signal (r=-0.13)
+KICKER_ENV_CENTER = 100.3     # mean team offensive DK points (inert at slope 0)
 KICKER_MIN = 3.0
 KICKER_MAX = 14.0
 
@@ -58,10 +58,11 @@ def apply_kicker_model(players, attached):
 
     Overrides every kicker row EXCEPT one matched by the manual CSV (the
     priority override) — board and salary-curve kicker projections alike,
-    since both were less accurate than this model on the fit sample. The
-    environment each kicker is projected from is the same dict's offense
-    projections for his own team, so per-source runs (get_source_projections)
-    get a per-source kicker model for free.
+    since both were less accurate than this model on the corrected
+    history. The environment is still computed from the same dict's
+    offense projections for the kicker's own team (per-source runs keep
+    their per-source environment for free), though the refit made the
+    model flat — a future tilt-restoring refit changes nothing here.
 
     Args:
         players: Player dicts (player_id, position, team) — the same list

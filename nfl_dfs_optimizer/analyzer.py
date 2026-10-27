@@ -236,10 +236,10 @@ def parse_args():
                              "sources (DailyFantasyFuel, BlueCollarDFS, CSV, "
                              "fallback) instead of the single-pipeline run")
     parser.add_argument('--no-kicker-model', action='store_true',
-                        help="Opt out of the game-environment kicker model "
+                        help="Opt out of the flat-prior kicker model "
                              "(see kicker_model.py). By default every "
-                             "kicker's projection is modeled from his team's "
-                             "offensive projections — board and salary-curve "
+                             "kicker gets the same 7.52-point projection "
+                             "— board and salary-curve "
                              "kicker values both proved less accurate")
     parser.add_argument('--calibrate', action='store_true',
                         help="Adjust projections by each source's "
