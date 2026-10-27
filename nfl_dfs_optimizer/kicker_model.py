@@ -1,16 +1,19 @@
 """
 Kicker projection model: game-environment-based kicker DK points.
 
-Why this exists: no projection board ranks kickers well. Across the 14
-kicker-games recorded in nfl_accuracy.db (weeks 1-2, 2026), DFF's own
-kicker projections ran +2.4 over actual with 6.6 MAE, and kickers no board
+Why this exists: no projection board ranks kickers well. Across the 42
+kicker-games recorded in nfl_accuracy.db (weeks 1-7, 2026, after the
+3+ FGs-made bonus was removed from kicker scoring), DFF's own kicker
+projections run +3.4 over actual with 5.2 MAE, and kickers no board
 lists fall to the salary curve (a $4,600 kicker gets ~11.2 points —
-the curve is built for skill positions). Meanwhile a kicker was the
-hindsight-optimal CAPTAIN in one of the first seven showdowns (Butker,
-5 FGs) — kicker upside is a real part of the ceiling, so kickers deserve a
-fair projection instead of an inflated salary-curve one.
+the curve is built for skill positions). Kickers still earn
+hindsight-optimal lineup spots (both kickers made the BAL @ ATL
+hindsight optimum), so kickers deserve a fair projection instead of an
+inflated salary-curve one.
 
-Model (fitted on those 14 kicker-games):
+Model (fitted on 14 kicker-games from weeks 1-2 — three of those
+actuals carried the since-removed +3 bonus, so a refit on the
+corrected history is a pending refinement):
     kicker = 7.36 + 0.016 * (team_offense_points - 88.7), clamped [3, 14]
 
 team_offense_points is the sum of the kicker's OWN team's projected DK

@@ -73,7 +73,6 @@ class KickerScoring:
     """DraftKings NFL kicker scoring constants."""
 
     extra_point: float = 1.0
-    field_goal_bonus: float = 3.0   # 3+ FGs made in a game
 
     # Field goal distance tiers: (low, high, points)
     FIELD_GOAL_TIERS = [
@@ -101,12 +100,14 @@ def calculate_kicker_points(field_goals=(), extra_points=0,
     Args:
         field_goals: Distances (yards) of each made field goal
         extra_points: Made extra points
+
+    No 3+ FGs-made bonus: current DK scoring is distance tiers + XPs
+    only (verified 2026-10 against DK Network's scoring chart; older DK
+    rules carried a 3-point 3+ FGs bonus, but no current source lists it).
     """
     r = rules or KickerScoring()
-    points = sum(r.field_goal_points(d) for d in field_goals)
-    if len(field_goals) >= 3:
-        points += r.field_goal_bonus
-    return points + extra_points * r.extra_point
+    return (sum(r.field_goal_points(d) for d in field_goals)
+            + extra_points * r.extra_point)
 
 
 def calculate_offensive_points(pass_yards=0, pass_tds=0, interceptions=0,

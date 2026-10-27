@@ -101,11 +101,12 @@ class TestKickerScoring:
         assert calculate_kicker_points([52]) == 5.0   # 50-59 yd FG
         assert calculate_kicker_points([62]) == 6.0   # 60+ yd FG
 
-    def test_extra_points_and_bonus(self):
+    def test_extra_points_no_bonus(self):
         from nfl_scoring import calculate_kicker_points
-        # 2 FGs (3+4) + 3 XPs = 10.0; the 3rd FG adds the 3+ FG bonus
+        # 2 FGs (3+4) + 3 XPs = 10.0; the 3rd FG adds only its distance
+        # tier — DK's current scoring has no 3+ FGs-made bonus
         assert calculate_kicker_points([30, 45], 3) == 10.0
-        assert calculate_kicker_points([30, 45, 52], 3) == 18.0
+        assert calculate_kicker_points([30, 45, 52], 3) == 15.0
 
     def test_no_makes_is_zero(self):
         from nfl_scoring import calculate_kicker_points
