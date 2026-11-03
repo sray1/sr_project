@@ -171,7 +171,7 @@ nfl_dfs_optimizer/
 ├── hindsight_showdown.py    # Hindsight-optimal showdown benchmark (recorded actuals → exact MILP)
 ├── hindsight_classic.py     # Hindsight-optimal classic benchmark (recorded actuals → exact optimizer)
 ├── sample_projections.csv  # Example manual projection CSV
-└── tests/                   # 322 tests incl. MILP-vs-brute-force cross-check
+└── tests/                   # 323 tests incl. MILP-vs-brute-force cross-check
 ```
 
 ## Notes

@@ -360,6 +360,52 @@ class TestParseDSTPoints:
     def test_empty_summary_returns_empty(self):
         assert parse_dst_points({}) == {}
 
+    def test_blocked_kick_credits_blocking_dst(self):
+        # ESPN team totals carry no blocked-kick stat, so blocks are parsed
+        # from the drive play-by-play and credited to the KICKING team's
+        # opponent (+2) — the CHI@SEA 2026 blocked-FG case. A blocked
+        # PUNT does not count: DK's bonus is for place kicks only.
+        summary = {
+            'boxscore': {'teams': [
+                {'team': {'abbreviation': 'CHI',
+                          'displayName': 'Chicago Bears'},
+                 'statistics': [
+                     {'name': 'sacksYardsLost', 'displayValue': '2-13'},
+                     {'name': 'interceptions', 'displayValue': '1'},
+                     {'name': 'fumblesLost', 'displayValue': '0'},
+                     {'name': 'defensiveTouchdowns', 'displayValue': '0'}]},
+                {'team': {'abbreviation': 'SEA',
+                          'displayName': 'Seattle Seahawks'},
+                 'statistics': [
+                     {'name': 'sacksYardsLost', 'displayValue': '3-22'},
+                     {'name': 'interceptions', 'displayValue': '0'},
+                     {'name': 'fumblesLost', 'displayValue': '1'},
+                     {'name': 'defensiveTouchdowns', 'displayValue': '0'}]},
+            ]},
+            'header': {'competitions': [{'competitors': [
+                {'team': {'abbreviation': 'CHI'}, 'score': '34'},
+                {'team': {'abbreviation': 'SEA'}, 'score': '17'},
+            ]}]},
+            'drives': {'previous': [
+                {'team': {'abbreviation': 'SEA'}, 'plays': [
+                    {'type': {'text': 'Blocked Field Goal'},
+                     'text': 'J.Myers 33 yard field goal is BLOCKED '
+                             '(A.Booker), Center-C.Stoll, Holder-M.Dickson.'},
+                ]},
+                {'team': {'abbreviation': 'CHI'}, 'plays': [
+                    {'type': {'text': 'Blocked Punt'},
+                     'text': 'P.O’Donnell punt is BLOCKED.'},
+                ]},
+            ]},
+        }
+        dst = parse_dst_points(summary)
+        # Bears: 3 sacks + 1 fum rec + 2 (blocked kick) + 1 (17 PA) = 8.0
+        assert dst['bears']['fppg'] == 8.0
+        assert dst['bears']['stats']['blocked_kicks'] == 1
+        # Seahawks: blocked punt ignored -> 2 sacks + 1 INT - 1 (34 PA)
+        assert dst['seahawks']['fppg'] == 3.0
+        assert dst['seahawks']['stats']['blocked_kicks'] == 0
+
 class TestSlateResults:
     def test_unfinished_game_skipped(self, monkeypatch, capsys):
         from game_results import fetch_slate_results

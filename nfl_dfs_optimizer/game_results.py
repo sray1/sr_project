@@ -13,8 +13,11 @@ list (the box-score 'kicking' group only carries aggregates, but DK points
 depend on FIELD GOAL DISTANCE, which every scoring play spells out:
 "Jason Myers 30 Yd Field Goal", "(Andy Borregales Kick)" for extra points).
 
-Known approximations (ESPN team totals lack them): blocked kicks, safeties,
-and DST extra-point/two-point returns are scored as 0. Player-level two-point
+Known approximations (ESPN team totals lack them): safeties and DST
+extra-point/two-point returns are scored as 0. Blocked kicks are parsed
+from the drive play-by-play ('Blocked Field Goal'/'Blocked Extra Point'
+play types — blocked PUNTS are not, since DK's +2 is for place kicks
+only). Player-level two-point
 conversions ARE credited (+2 to passer/receiver/rusher) — parsed from the
 scoring-plays text, where every successful attempt is embedded in the
 scored-TD entry's parenthetical.
@@ -341,6 +344,38 @@ def parse_two_point_points(summary):
     return credits
 
 
+BLOCKED_KICK_PLAY_TYPES = {'Blocked Field Goal', 'Blocked Extra Point'}
+
+
+def _blocked_kicks_by_team(summary, team_abbrs):
+    """Count blocked FGs/extra points per BLOCKING team from the play-by-play.
+
+    ESPN's box-score totals carry no blocked-kick stat, but the drive
+    play-by-play labels every blocked place kick ('Blocked Field Goal' /
+    'Blocked Extra Point' play type). A block is credited to the defense —
+    the opponent of the drive's (kicking) team. Blocked punts are skipped:
+    DK's +2 'blocked kick' bonus covers field goals and PATs only.
+
+    Returns:
+        Dict {team_abbr: blocked_kick_count}
+    """
+    counts = {}
+    drives = (summary.get('drives') or {}).get('previous') or []
+    for drive in drives:
+        kicker_abbr = (drive.get('team') or {}).get('abbreviation')
+        for play in drive.get('plays') or []:
+            type_text = (play.get('type') or {}).get('text')
+            if type_text not in BLOCKED_KICK_PLAY_TYPES:
+                continue
+            # The blocking DST is the team that did NOT kick it
+            blockers = [a for a in team_abbrs
+                        if a and kicker_abbr and a != kicker_abbr]
+            if len(blockers) != 1:
+                continue
+            counts[blockers[0]] = counts.get(blockers[0], 0) + 1
+    return counts
+
+
 def parse_dst_points(summary):
     """Compute each team's DST DK points from team totals + opponent score.
 
@@ -373,6 +408,7 @@ def parse_dst_points(summary):
                 _to_float(raw_score)
 
     results = {}
+    blocked_kicks = _blocked_kicks_by_team(summary, list(display_names))
     for abbr, display_name in display_names.items():
         opponent = next((o for o in display_names if o != abbr), None)
         if opponent is None:
@@ -395,10 +431,12 @@ def parse_dst_points(summary):
             continue
 
         dst = DSTScoring()
+        blocked = blocked_kicks.get(abbr, 0)
         fppg = (opp_sacks * dst.sack
                 + opp_ints * dst.interception
                 + opp_fumbles_lost * dst.fumble_recovery
-                + def_tds * dst.touchdown)
+                + def_tds * dst.touchdown
+                + blocked * dst.blocked_kick)
         if points_allowed is not None:
             fppg += DSTScoring.points_allowed_bonus(int(points_allowed))
 
@@ -409,6 +447,7 @@ def parse_dst_points(summary):
                 'stats': {'sacks': opp_sacks, 'interceptions': opp_ints,
                           'fumble_recoveries': opp_fumbles_lost,
                           'touchdowns': def_tds,
+                          'blocked_kicks': blocked,
                           'points_allowed': points_allowed},
             }
     return results
