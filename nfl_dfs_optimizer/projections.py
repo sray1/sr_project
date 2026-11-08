@@ -508,7 +508,10 @@ def scrape_dailyfantasyfuel(week=None, slate_games=None, slate_date=None):
         else:
             print("    DFF has no slate matching this contest's games — "
                   "using the site's default slate (may be partial)")
-    html = _fetch_html(url)
+    # Main-slate pages run ~1.4MB and can take 30s+ to render server-side
+    # (measured 2026-11: the Sunday classic page times out at the 15s
+    # default; showdown pages stay under it)
+    html = _fetch_html(url, timeout=45)
     if not html:
         _dff_out_cache = []
         _dff_team_cache = {}
