@@ -39,7 +39,9 @@ def build_lineups_per_source(draftables, source_projections, mode,
                              stack_rule='qbwr', allow_dst_captain=True,
                              drop_backup_qbs=True, exclude=None,
                              drop_nonstarter_kickers=False,
-                             drop_unprojected_wrs=False):
+                             drop_unprojected_wrs=False,
+                             drop_min_salary_punts=True,
+                             shrink_corrections=None):
     """Build the top lineup for each source with the same exact optimizer.
 
     Args:
@@ -59,6 +61,12 @@ def build_lineups_per_source(draftables, source_projections, mode,
                                   EXCEPT 'fallback', which projects every
                                   WR by construction — filtering it would
                                   empty its WR pool
+        drop_min_salary_punts: Punt-ban pool filter (same as analyzer
+                              --keep-punts)
+        shrink_corrections: Classic winner's-curse shrinkage from
+                              calibration.load_slope_corrections - applied
+                              to each pool AFTER building (lineups change,
+                              saved projection rows do not); None disables
         exclude: Pool filter (same as analyzer --exclude)
 
     Returns:
@@ -77,9 +85,14 @@ def build_lineups_per_source(draftables, source_projections, mode,
                                      drop_nonstarter_kickers=(
                                          drop_nonstarter_kickers),
                                      drop_unprojected_wrs=drop_wrs,
+                                     drop_min_salary_punts=(
+                                         drop_min_salary_punts),
                                      exclude=exclude,
                                      verbose=not filter_note_printed)
             filter_note_printed = True
+            if shrink_corrections:
+                from calibration import apply_pool_shrinkage
+                apply_pool_shrinkage(pool, shrink_corrections)
             if mode == 'showdown':
                 lineups = generate_showdown_lineups(
                     pool, n_lineups=1, allow_dst_captain=allow_dst_captain)
@@ -218,7 +231,8 @@ def run_comparison(args, contest, mode, draftables):
     Args:
         args: Parsed analyzer CLI args (csv, week, no_scrape, stack,
               no_dst_captain, exclude, keep_backup_qbs, keep_deep_wrs,
-              keep_punters, no_kicker_model, calibrate are honored)
+              keep_punters, no_kicker_model, calibrate, keep_punts,
+              no_injury_guard, no_shrinkage are honored)
         contest: Selected contest object
         mode: 'showdown' or 'classic'
         draftables: Raw draftables from dk_client.fetch_draftables
@@ -243,13 +257,26 @@ def run_comparison(args, contest, mode, draftables):
     # getattr: callers (tests, tracker) may use simpler args namespaces
     exclude = build_auto_exclusions(
         draftables, getattr(args, 'exclude', None),
-        allow_scrape=not args.no_scrape)
+        allow_scrape=not args.no_scrape,
+        include_espn_injuries=not getattr(args, 'no_injury_guard', False))
+
+    # Classic winner's-curse shrinkage (analyzer --no-shrinkage opts out):
+    # pools are compressed after building; the printed per-player tables
+    # still show raw projections
+    shrink_corrections = None
+    if (mode == 'classic'
+            and not getattr(args, 'no_shrinkage', False)):
+        from calibration import load_slope_corrections
+        shrink_corrections = load_slope_corrections()
+
     lineups_by_source = build_lineups_per_source(
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
         drop_backup_qbs=not getattr(args, 'keep_backup_qbs', False),
         drop_nonstarter_kickers=not getattr(args, 'keep_punters', False),
         drop_unprojected_wrs=not getattr(args, 'keep_deep_wrs', False),
+        drop_min_salary_punts=not getattr(args, 'keep_punts', False),
+        shrink_corrections=shrink_corrections,
         exclude=exclude)
 
     if not lineups_by_source:

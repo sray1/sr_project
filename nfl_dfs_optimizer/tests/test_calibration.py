@@ -4,7 +4,9 @@ import pytest
 
 import accuracy_db as db
 import calibration
-from calibration import apply_corrections, load_corrections, position_biases
+from calibration import (apply_corrections, apply_pool_shrinkage,
+                         load_corrections, load_slope_corrections,
+                         position_biases, position_slopes)
 
 
 @pytest.fixture
@@ -133,3 +135,110 @@ class TestApplyCorrections:
                     3: {'projection': 8.0, 'source': 'x'}}
         assert apply_corrections(attached, players, {}) == 0
         assert attached[1]['projection'] == 20.0
+
+class TestPositionSlopes:
+    """Slope fits: the classic winner's-curse shrinkage."""
+
+    def seed_classic_row(self, temp_db, pid, name, projected, actual,
+                         position='WR'):
+        temp_db.save_contest(1, 2, 'test', 'classic', ['KC @ BAL'])
+        temp_db.save_source_projection(1, 'dff', {
+            'player_id': pid, 'name': name, 'position': position,
+            'positions': [position], 'team': 'KC', 'salary': 5000,
+            'projection': projected, 'source': 'dff'})
+        conn = temp_db.get_connection()
+        conn.execute("UPDATE source_projections SET actual_fppg = ? "
+                     "WHERE contest_id = 1 AND source = 'dff' "
+                     "AND player_id = ?",
+                     (actual, str(pid)))
+        conn.commit()
+        conn.close()
+
+    def test_exact_ols_fit_classic_rows_only(self, temp_db):
+        # actual = 0.5 * projected + 5: slope 0.5, intercept 5.
+        # Points (10, 10), (20, 15) force the line exactly.
+        self.seed_classic_row(temp_db, 1, 'WR A', 10.0, 10.0)
+        self.seed_classic_row(temp_db, 2, 'WR B', 20.0, 15.0)
+        fits = position_slopes(mode='classic', min_n=2)
+        assert fits['dff']['WR']['slope'] == pytest.approx(0.5)
+        assert fits['dff']['WR']['intercept'] == pytest.approx(5.0)
+        assert fits['dff']['WR']['n'] == 2
+
+    def test_showdown_rows_do_not_pollute_classic_fit(self, temp_db):
+        temp_db.save_contest(2, 3, 'sd', 'showdown', ['NE @ SEA'])
+        temp_db.save_source_projection(2, 'dff', {
+            'player_id': 1, 'name': 'WR C', 'position': 'WR',
+            'positions': ['WR'], 'team': 'NE', 'salary': 5000,
+            'projection': 50.0, 'source': 'dff'})
+        conn = temp_db.get_connection()
+        conn.execute("UPDATE source_projections SET actual_fppg = 0.0 "
+                     "WHERE contest_id = 2")
+        conn.commit(); conn.close()
+        self.seed_classic_row(temp_db, 1, 'WR A', 10.0, 10.0)
+        assert position_slopes(mode='classic', min_n=1) == {}
+
+    def test_ungraded_rows_ignored(self, temp_db):
+        temp_db.save_contest(1, 2, 'test', 'classic', ['KC @ BAL'])
+        temp_db.save_source_projection(1, 'dff', {
+            'player_id': 1, 'name': 'Ungraded', 'position': 'WR',
+            'positions': ['WR'], 'team': 'KC', 'salary': 5000,
+            'projection': 10.0, 'source': 'dff'})
+        assert position_slopes(mode='classic', min_n=1) == {}
+
+    def test_no_db_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, 'DB_PATH', str(tmp_path / 'missing.db'))
+        assert position_slopes() == {}
+
+
+class TestLoadSlopeCorrections:
+    def test_gate_and_output_shape(self, temp_db, capsys):
+        temp_db.save_contest(1, 2, 'test', 'classic', ['KC @ BAL'])
+        for i in range(3):
+            # actual = projected at three different levels: slope 1,
+            # intercept 0 (varied projections so the fit is not degenerate)
+            seed_row(temp_db, 1, 'dff', i, f'WR {i}', 'WR', 'KC',
+                     10.0 + i, 10.0 + i, matched=True)
+        corrections = load_slope_corrections(min_n=3)
+        slope, intercept = corrections['dff']['WR']
+        assert slope == pytest.approx(1.0)
+        assert intercept == pytest.approx(0.0)
+        assert 'shrinkage fits' in capsys.readouterr().out
+
+    def test_no_trusted_fits_prints_note(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(db, 'DB_PATH', str(tmp_path / 'missing.db'))
+        assert load_slope_corrections() == {}
+        assert 'no trusted' in capsys.readouterr().out
+
+
+class TestApplyPoolShrinkage:
+    def pool(self):
+        return [
+            {'player_id': 1, 'name': 'Stud QB', 'position': 'QB',
+             'source': 'dailyfantasyfuel', 'projection': 20.0},
+            {'player_id': 2, 'name': 'Scrub WR', 'position': 'WR',
+             'source': 'dailyfantasyfuel', 'projection': 5.0},
+            {'player_id': 3, 'name': 'Fallback TE', 'position': 'TE',
+             'source': 'fallback', 'projection': 8.0},
+            {'player_id': 4, 'name': 'Modeled K', 'position': 'K',
+             'source': 'kicker_model', 'projection': 7.91},
+        ]
+
+    def test_shrinks_by_rows_own_source_and_position(self):
+        corrections = {'dailyfantasyfuel': {'QB': (0.8, 2.0)},
+                        'fallback': {'TE': (0.5, 1.0)}}
+        shrunk = apply_pool_shrinkage(self.pool(), corrections)
+        # QB: 0.8 * 20 + 2 = 18.0 (compressed toward the mean)
+        # TE: 0.5 * 8 + 1 = 5.0
+        # WR: no dff WR fit; K: no kicker_model fit
+        assert shrunk == 2
+        pool = self.pool()
+        apply_pool_shrinkage(pool, corrections)
+        assert pool[0]['projection'] == 18.0
+        assert pool[1]['projection'] == 5.0
+        assert pool[2]['projection'] == 5.0
+        assert pool[3]['projection'] == 7.91
+
+    def test_empty_corrections_noop(self):
+        pool = self.pool()
+        assert apply_pool_shrinkage(pool, {}) == 0
+        assert pool[0]['projection'] == 20.0

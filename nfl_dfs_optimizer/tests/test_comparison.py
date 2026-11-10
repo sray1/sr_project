@@ -269,6 +269,7 @@ class TestDeepWrFilterPerSource:
             'fallback': make_source_projections(draftables, {}),
         }
         lineups = build_lineups_per_source(
-            draftables, sources, 'classic', drop_unprojected_wrs=True)
+            draftables, sources, 'classic', drop_unprojected_wrs=True,
+            drop_min_salary_punts=False)
         assert 'dailyfantasyfuel' not in lineups
         assert len(lineups['fallback']['players']) == 9

@@ -72,15 +72,28 @@ def save_snapshot(args):
     drop_backup_qbs = not getattr(args, 'keep_backup_qbs', False)
     drop_nonstarter_kickers = not getattr(args, 'keep_punters', False)
     drop_unprojected_wrs = not getattr(args, 'keep_deep_wrs', False)
+    drop_min_salary_punts = not getattr(args, 'keep_punts', False)
     exclude = build_auto_exclusions(
         draftables, getattr(args, 'exclude', None),
-        allow_scrape=not args.no_scrape)
+        allow_scrape=not args.no_scrape,
+        include_espn_injuries=not getattr(args, 'no_injury_guard', False))
+
+    # Classic winner's-curse shrinkage (analyzer --no-shrinkage opts out):
+    # lineups are built from compressed pools, while the projection rows
+    # saved below stay raw — the DB keeps measuring the boards themselves
+    shrink_corrections = None
+    if mode == 'classic' and not getattr(args, 'no_shrinkage', False):
+        from calibration import load_slope_corrections
+        shrink_corrections = load_slope_corrections()
+
     lineups_by_source = build_lineups_per_source(
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
         drop_backup_qbs=drop_backup_qbs, exclude=exclude,
         drop_nonstarter_kickers=drop_nonstarter_kickers,
-        drop_unprojected_wrs=drop_unprojected_wrs)
+        drop_unprojected_wrs=drop_unprojected_wrs,
+        drop_min_salary_punts=drop_min_salary_punts,
+        shrink_corrections=shrink_corrections)
 
     if not lineups_by_source:
         print("No source produced a feasible lineup — nothing to save")
@@ -106,6 +119,8 @@ def save_snapshot(args):
                                  drop_unprojected_wrs=(
                                      drop_unprojected_wrs
                                      and source != 'fallback'),
+                                 drop_min_salary_punts=(
+                                     drop_min_salary_punts),
                                  exclude=exclude, verbose=False)
         for player in pool:
             db.save_source_projection(contest.contest_id, source, player)
@@ -346,6 +361,17 @@ def parse_args():
                              "and practice-squad kickers - which DK lists "
                              "under K at the same salary - are dropped via "
                              "the ESPN roster API)")
+    parser.add_argument('--keep-punts', action='store_true',
+                        help="Do NOT auto-drop salary <= $400 skill players "
+                             "no projection source gives >= 4 points "
+                             "(punt ban; mirrors analyzer.py)")
+    parser.add_argument('--no-injury-guard', action='store_true',
+                        help="Do NOT exclude players ESPN's official injury "
+                             "report lists as Out/IR (mirrors analyzer.py)")
+    parser.add_argument('--no-shrinkage', action='store_true',
+                        help="Opt out of the classic winner's-curse "
+                             "shrinkage when building classic lineups "
+                             "(mirrors analyzer.py)")
     parser.add_argument('--no-kicker-model', action='store_true',
                         help="Opt out of the flat-prior kicker model "
                              "(see kicker_model.py); kickers fall back to "

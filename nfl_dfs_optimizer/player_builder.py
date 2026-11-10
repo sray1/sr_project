@@ -18,9 +18,23 @@ from pydfs_lineup_optimizer.player import Player as PyDFSPlayer, GameInfo
 
 from projections import (get_dff_out_names, get_dff_team_mismatches,
                          normalize_dst_name, normalize_name)
+from injury_guard import espn_injury_exclusions
 from starter_kickers import filter_nonstarter_kickers
 
 MIN_SALARY = 300  # DK NFL minimum salary ($300)
+
+# Min-salary punt ban (improvement #1, week 9 2026): non-K/DST players at
+# or under PUNT_SALARY_MAX whom no projection source gives at least
+# PUNT_PROJECTION_MIN points. Season evidence: the optimizer's favorite
+# $300 fill-ins recorded ZERO stats 6+ straight weeks (Ahmani Marshall,
+# Salvon Ahmed, Robert Henry Jr., Sam Roush, Josh Cuevas, Barika Kpeenu,
+# Brock Lampe) — DFF's board gives ghost noise like 2.42 and the salary
+# curve gives ~3, so the MILP loves them for the cap relief. Kickers and
+# DSTs are never priced this low ($4,600+ / $2,000+), so the salary gate
+# alone can never touch them. A min-salary player a board genuinely
+# projects (>= 4.0 — an injury riser) stays in the pool.
+PUNT_SALARY_MAX = 400
+PUNT_PROJECTION_MIN = 4.0
 
 
 def filter_backup_qbs(pool):
@@ -159,14 +173,38 @@ def merge_exclusions(manual_exclude, out_entries):
     return merged
 
 
-def build_auto_exclusions(players, manual_exclude=None, allow_scrape=True):
+def filter_min_salary_punts(pool):
+    """Drop min-salary skill players no source projects (punt ban).
+
+    A 'punt' here: salary <= PUNT_SALARY_MAX and projection <
+    PUNT_PROJECTION_MIN. See the constants' comment for the season
+    evidence (6+ straight weeks of literal zeros). K/DST salaries never
+    fall under the salary gate, and a genuinely-projected cheap player
+    (>= 4.0 points) survives.
+
+    Returns:
+        (kept, dropped) pool entries
+    """
+    kept, dropped = [], []
+    for entry in pool:
+        is_punt = ((entry.get('salary') or 0) <= PUNT_SALARY_MAX
+                   and (entry.get('projection') or 0) < PUNT_PROJECTION_MIN)
+        (dropped if is_punt else kept).append(entry)
+    return kept, dropped
+
+
+def build_auto_exclusions(players, manual_exclude=None, allow_scrape=True,
+                          include_espn_injuries=True):
     """Combine every pool-level exclusion into one list.
 
     Layers (all flow through exclude_named_players, so OUT/mismatch entries
     are team-qualified while manual names match every team):
         1. manual --exclude names, if any
         2. DFF injury report: players listed OUT/IR/SUSP
-        3. Traded players: DK slate entries DFF now lists under a different
+        3. ESPN injury report (official practice report): players listed
+           Out/IR - catches announced-out players DFF's board and DK's
+           status flag still carry (the week-8 Monangai lesson)
+        4. Traded players: DK slate entries DFF now lists under a different
            team (DK draftables lag roster moves — the player cannot appear
            in the slate's games)
 
@@ -174,13 +212,20 @@ def build_auto_exclusions(players, manual_exclude=None, allow_scrape=True):
         players: Normalized DK draftable dicts (name, team, positions) — the
             team-mismatch layer needs the slate's own team assignments
         manual_exclude: --exclude value (comma-separated string or list)
-        allow_scrape: Whether DFF may be scraped if no cache exists yet
+        allow_scrape: Whether DFF/ESPN may be scraped if no cache exists yet
+        include_espn_injuries: Consult the ESPN injury guard (set False to
+            opt out via --no-injury-guard)
 
     Returns:
         List of exclusion entries for build_player_pool(exclude=...)
     """
     merged = merge_exclusions(
         manual_exclude, get_dff_out_names(allow_scrape=allow_scrape))
+    if include_espn_injuries:
+        for entry in espn_injury_exclusions(
+                players, allow_scrape=allow_scrape):
+            if entry not in merged:
+                merged.append(entry)
     for entry in get_dff_team_mismatches(players, allow_scrape=allow_scrape):
         if entry not in merged:
             merged.append(entry)
@@ -190,7 +235,8 @@ def build_auto_exclusions(players, manual_exclude=None, allow_scrape=True):
 def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
                      drop_backup_qbs=True, exclude=None, verbose=True,
                      drop_unprojected_wrs=False,
-                     drop_nonstarter_kickers=False):
+                     drop_nonstarter_kickers=False,
+                     drop_min_salary_punts=True):
     """Build the deduplicated, projected player pool.
 
     Args:
@@ -219,6 +265,11 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
             ESPN roster API, best-effort). Default False — tests and
             hindsight benchmarks pass nothing; the analyzer and tracker
             pipelines pass True.
+        drop_min_salary_punts: Drop salary <= $400 skill players no
+            projection source gives >= 4.0 points (the season's $300
+            punts recorded literal zeros 6+ straight weeks; see
+            filter_min_salary_punts). Default True — pass False /
+            --keep-punts to keep the cap-relief ghosts.
 
     Returns:
         List of player dicts with:
@@ -285,6 +336,16 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
         if deep_wrs and verbose:
             print(f"Deep-WR filter: dropped {len(deep_wrs)} fallback-only WRs "
                   f"(practice squad / WR4+ / not projected by any source)")
+
+    if drop_min_salary_punts:
+        pool, punts = filter_min_salary_punts(pool)
+        if punts and verbose:
+            names = ', '.join(f"{p['name']} (${p['salary']:,}, "
+                              f"{p['projection']:.1f} proj)"
+                              for p in punts)
+            print(f"Punt ban: dropped {len(punts)} min-salary players no "
+                  f"source projects >= {PUNT_PROJECTION_MIN:.0f} points: "
+                  f"{names}")
 
     return pool
 

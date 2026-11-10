@@ -63,6 +63,25 @@ def print_classic_lineup(lineup_dict, rank):
               f"{player['projection']:>6.2f} proj ({value:.2f}x){opponent}")
 
 
+def _print_flagship(lineups):
+    """Mark the DB-corrected flagship single-entry pick (see flagship.py)."""
+    from flagship import (MIN_SNAPSHOTS, captain_rank_stats,
+                          flagship_pick)
+    stats = captain_rank_stats()
+    pick = flagship_pick(lineups, stats)
+    if pick is None:
+        print(f"\nFlagship: no trusted retro-grade stats yet (need "
+              f"{MIN_SNAPSHOTS} graded snapshots per build rank) — "
+              "chalk order stands")
+        return
+    index, gain = pick
+    lineup = lineups[index]
+    print(f"\n* FLAGSHIP single-entry pick: Lineup {index + 1} "
+          f"({lineup['captain']['name']} CPT) — DB retro-grade says this "
+          f"build rank outperforms its projection by "
+          f"{gain:+.1f} pts vs the chalk #1 build")
+
+
 def select_contest(args):
     """Select the contest to analyze based on CLI args.
 
@@ -146,12 +165,38 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
                              drop_backup_qbs=not args.keep_backup_qbs,
                              drop_unprojected_wrs=not args.keep_deep_wrs,
                              drop_nonstarter_kickers=not args.keep_punters,
+                             drop_min_salary_punts=not args.keep_punts,
                              exclude=build_auto_exclusions(
                                  draftables, args.exclude,
-                                 allow_scrape=not args.no_scrape))
+                                 allow_scrape=not args.no_scrape,
+                                 include_espn_injuries=(
+                                     not args.no_injury_guard)))
     display_projection_sources(player_projections, pool)
     print(f"\nPlayer pool: {len(pool)} players "
           f"(deduped, min salary, active only)")
+
+    # Doubtful/Questionable slate players stay in the pool but get a note
+    # (ESPN official report — same fetch the Out/IR guard used)
+    if not args.no_injury_guard and not args.no_scrape:
+        from injury_guard import espn_injury_notes
+        notes = espn_injury_notes(draftables, allow_scrape=True)
+        if notes:
+            shown = '; '.join(notes[:8])
+            more = f' (+{len(notes) - 8} more)' if len(notes) > 8 else ''
+            print(f"Injury guard (Q/D, still in pool): {shown}{more}")
+
+    # Classic winner's-curse shrinkage: the DB's fitted slopes compress
+    # the board's studs toward each position's mean before optimizing
+    # (see calibration.position_slopes) — showdown pools show no tilt,
+    # so the correction is classic-only.
+    if mode == 'classic' and not args.no_shrinkage:
+        from calibration import (apply_pool_shrinkage,
+                                  load_slope_corrections)
+        corrections = load_slope_corrections()
+        if corrections:
+            shrunk = apply_pool_shrinkage(pool, corrections)
+            print(f"Shrinkage: {shrunk} pool projections compressed "
+                  f"toward their position means")
 
     # Optimize
     if mode == 'showdown':
@@ -173,6 +218,8 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
 
         if not lineups:
             print("No feasible lineups found — check the player pool and filters")
+        elif args.unique_captains and not args.no_flagship:
+            _print_flagship(lineups)
     else:
         pydfs_players = build_pydfs_players(pool)
         lineups = generate_classic_lineups(
@@ -231,6 +278,29 @@ def parse_args():
                              "practice-squad kickers - which DK lists under K "
                              "at the same salary - are dropped via the ESPN "
                              "roster API)")
+    parser.add_argument('--keep-punts', action='store_true',
+                        help="Do NOT auto-drop salary <= $400 skill players "
+                             "no projection source gives >= 4 points "
+                             "(default: the punt ban is on — season history "
+                             "has 6+ straight weeks of $300 punts recording "
+                             "literal zeros)")
+    parser.add_argument('--no-injury-guard', action='store_true',
+                        help="Do NOT exclude players ESPN's official injury "
+                             "report lists as Out/IR (default: the guard is "
+                             "on — DFF's board and DK's status flag lag team "
+                             "announcements)")
+    parser.add_argument('--no-shrinkage', action='store_true',
+                        help="Opt out of the classic winner's-curse "
+                             "shrinkage (default: projections are "
+                             "compressed toward each position's fitted mean "
+                             "before optimizing classic lineups — see "
+                             "calibration.position_slopes)")
+    parser.add_argument('--no-flagship', action='store_true',
+                        help="Opt out of the DB-corrected flagship "
+                             "single-entry marker on captain-diversity "
+                             "builds (default: retro-graded rank "
+                             "corrections mark the recommended build — "
+                             "see flagship.py)")
     parser.add_argument('--compare', action='store_true',
                         help="Compare optimal lineups across ALL projection "
                              "sources (DailyFantasyFuel, BlueCollarDFS, CSV, "
@@ -238,7 +308,7 @@ def parse_args():
     parser.add_argument('--no-kicker-model', action='store_true',
                         help="Opt out of the flat-prior kicker model "
                              "(see kicker_model.py). By default every "
-                             "kicker gets the same 7.52-point projection "
+                             "kicker gets the same 7.91-point projection "
                              "— board and salary-curve "
                              "kicker values both proved less accurate")
     parser.add_argument('--calibrate', action='store_true',

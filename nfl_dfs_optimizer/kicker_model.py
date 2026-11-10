@@ -11,24 +11,32 @@ hindsight-optimal lineup spots (both kickers made the BAL @ ATL
 hindsight optimum), so kickers deserve a fair projection instead of an
 inflated salary-curve one.
 
-Model (refit on the corrected 42-kicker-game history):
-    kicker = 7.52, clamped [3, 14]
+Model (mid-season refit, weeks 1-9 2026, 54 distinct graded kicker-games
+in nfl_accuracy.db):
+    kicker = 7.91, clamped [3, 14]
 
-The original fit (14 kicker-games, weeks 1-2) found a game-environment
-tilt — kicker = 7.36 + 0.016 * (team offense projected - 88.7), r =
-+0.32 — but it did not survive more data: at n=42 the correlation
-between a kicker's actual points and his team's projected offensive
-total is r = -0.13 (raw OLS slope -0.05). The flat mean is also the
-best predictor on the full sample (MAE 3.58 vs 3.59 for a tiny shrunk
-tilt and 5.16 for DFF's board), so the tilt is gone and the model is
-an honest flat prior. team_offense_points is still accepted (and still
-computed per source in apply_kicker_model) so the interface is
-unchanged; a future refit that finds a real signal can restore it.
+The week-7 fit (42 games, pre-blocked-kick scoring corrections) put the
+mean at 7.52; the full graded history says 7.91 (sd 4.46, se 0.61). The
+hindsight optimes keep loading kickers (Bass 13.0, Stevens 16.0, Little
+17.0 among recent games — balanced by plenty of 3s), so the prior is
+refit upward at mid-season rather than left at the smaller sample. The
+game-environment tilt is still dead:
+
+The original fit (14 kicker-games, weeks 1-2) found a tilt — kicker =
+7.36 + 0.016 * (team offense projected - 88.7), r = +0.32 — but it did
+not survive more data: at n=42 the correlation between a kicker's
+actual points and his team's projected offensive total is r = -0.13
+(raw OLS slope -0.05). The flat mean is also the best predictor on the
+full sample (MAE 3.58 vs 3.59 for a tiny shrunk tilt and 5.16 for DFF's
+board), so the tilt is gone and the model is an honest flat prior.
+team_offense_points is still accepted (and still computed per source in
+apply_kicker_model) so the interface is unchanged; a future refit that
+finds a real signal can restore it.
 
 Manual CSV projections always win: a hand-entered kicker beats the model.
 """
 
-KICKER_BASE = 7.52            # mean kicker DK points, corrected history (n=42)
+KICKER_BASE = 7.91            # mean kicker DK points, weeks 1-9 history (n=54 games)
 KICKER_ENV_SLOPE = 0.0         # refit found no environment signal (r=-0.13)
 KICKER_ENV_CENTER = 100.3     # mean team offensive DK points (inert at slope 0)
 KICKER_MIN = 3.0

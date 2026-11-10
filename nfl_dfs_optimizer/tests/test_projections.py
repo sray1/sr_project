@@ -425,7 +425,7 @@ class TestDFFSlateResolution:
         # slate_games given -> the per-slate showdown page is fetched
         fetched = []
 
-        def fake_fetch_html(url):
+        def fake_fetch_html(url, timeout=15):
             fetched.append(url)
             return load_fixture('dff_projections.html')
 
@@ -440,7 +440,7 @@ class TestDFFSlateResolution:
     def test_scrape_unmatched_slate_falls_back_to_default(self, monkeypatch):
         fetched = []
 
-        def fake_fetch_html(url):
+        def fake_fetch_html(url, timeout=15):
             fetched.append(url)
             return load_fixture('dff_projections.html')
 
@@ -453,7 +453,7 @@ class TestDFFSlateResolution:
     def test_scrape_without_slate_games_uses_default(self, monkeypatch):
         fetched = []
 
-        def fake_fetch_html(url):
+        def fake_fetch_html(url, timeout=15):
             fetched.append(url)
             return load_fixture('dff_projections.html')
 
@@ -481,7 +481,7 @@ class TestDFFSlateResolution:
 class TestDFFOutList:
     def test_scrape_populates_cache(self, monkeypatch):
         monkeypatch.setattr(projections, '_fetch_html',
-                            lambda url: load_fixture('dff_projections.html'))
+                            lambda url, timeout=15: load_fixture('dff_projections.html'))
         scrape_dailyfantasyfuel()
         out_names = get_dff_out_names()
         assert ('Zach Charbonnet', 'SEA') in out_names
@@ -502,7 +502,7 @@ class TestDFFOutList:
         assert get_dff_out_names(allow_scrape=False) == []
 
     def test_failed_scrape_yields_empty_not_none(self, monkeypatch):
-        monkeypatch.setattr(projections, '_fetch_html', lambda url: None)
+        monkeypatch.setattr(projections, '_fetch_html', lambda url, timeout=15: None)
         assert scrape_dailyfantasyfuel() == {}
         # cache [] (not None) so get_dff_out_names never re-fetches
         assert get_dff_out_names() == []
@@ -526,7 +526,7 @@ class TestDFFTeamMismatch:
 
     def _load_fixture_cache(self, monkeypatch):
         monkeypatch.setattr(projections, '_fetch_html',
-                            lambda url: load_fixture('dff_projections.html'))
+                            lambda url, timeout=15: load_fixture('dff_projections.html'))
 
     def test_traded_player_flagged_with_dk_team(self, monkeypatch):
         # DK's slate still lists Charbonnet on NE; DFF's board carries SEA
@@ -571,7 +571,7 @@ class TestDFFTeamMismatch:
             [self.dk_player('Jacob Smith', '')]) == []
 
     def test_failed_scrape_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(projections, '_fetch_html', lambda url: None)
+        monkeypatch.setattr(projections, '_fetch_html', lambda url, timeout=15: None)
         assert get_dff_team_mismatches(
             [self.dk_player('Zach Charbonnet', 'NE')]) == []
 

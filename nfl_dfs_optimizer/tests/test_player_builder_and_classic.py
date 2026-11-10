@@ -3,7 +3,8 @@
 import pytest
 
 from player_builder import (build_auto_exclusions, build_player_pool,
-                            build_pydfs_players)
+                            build_pydfs_players, filter_min_salary_punts,
+                            PUNT_PROJECTION_MIN, PUNT_SALARY_MAX)
 from classic_optimizer import (
     generate_classic_lineups, lineup_to_dict, validate_classic_lineup,
 )
@@ -374,14 +375,20 @@ class TestFilterUnprojectedWRs:
         kept, dropped = filter_unprojected_wrs(pool)
         assert [p['name'] for p in kept] == ['Promoted WR3']
         assert [p['name'] for p in dropped] == ['PS Signing']
-    """build_auto_exclusions: manual + DFF OUT + traded players, one list."""
 
-    def test_combines_all_three_layers(self, monkeypatch):
+
+class TestBuildAutoExclusions:
+    """build_auto_exclusions: manual + DFF OUT + ESPN OUT + traded, one list."""
+
+    def test_combines_all_layers(self, monkeypatch):
         import projections
+        import injury_guard
         monkeypatch.setattr(projections, '_dff_out_cache',
                             [('Zach Charbonnet', 'SEA')])
         monkeypatch.setattr(projections, '_dff_team_cache',
                             {'kayshon boutte': {'HOU'}})
+        # ESPN guard: empty module cache, no live fetch
+        monkeypatch.setattr(injury_guard, '_injury_cache', {})
         players = [{'name': 'Kayshon Boutte', 'team': 'NE',
                     'positions': ['WR']}]
         merged = build_auto_exclusions(players, 'Tommy DeVito')
@@ -391,9 +398,11 @@ class TestFilterUnprojectedWRs:
 
     def test_traded_player_dropped_from_pool(self, monkeypatch):
         import projections
+        import injury_guard
         monkeypatch.setattr(projections, '_dff_out_cache', [])
         monkeypatch.setattr(projections, '_dff_team_cache',
                             {'kayshon boutte': {'HOU'}})
+        monkeypatch.setattr(injury_guard, '_injury_cache', {})
         draftables = [
             make_draftable(1, 'Kayshon Boutte', 'WR', 'NE', 5600),
             make_draftable(2, 'Kenneth Walker', 'RB', 'SEA', 8600),
@@ -404,3 +413,60 @@ class TestFilterUnprojectedWRs:
         # The stale NE entry is gone; a real HOU slate entry would have
         # matched DFF's team and stayed
         assert {p['name'] for p in pool} == {'Kenneth Walker'}
+
+
+class TestMinSalaryPuntBan:
+    """filter_min_salary_punts: the season's $300 ghost-punt fix."""
+
+    def test_filter_drops_only_unprojected_min_salary(self):
+        pool = [
+            {'name': 'Brock Lampe', 'salary': 300, 'projection': 2.42},
+            {'name': 'Projected Riser', 'salary': 300, 'projection': 5.0},
+            {'name': 'Mid Priced', 'salary': 3400, 'projection': 2.0},
+            {'name': 'Tyler Bass', 'salary': 4600, 'projection': 7.91},
+        ]
+        kept, dropped = filter_min_salary_punts(pool)
+        assert [p['name'] for p in dropped] == ['Brock Lampe']
+        assert [p['name'] for p in kept] == ['Projected Riser',
+                                             'Mid Priced', 'Tyler Bass']
+
+    def test_boundary_projection_kept(self):
+        pool = [{'name': 'Exactly Floor', 'salary': 400,
+                 'projection': PUNT_PROJECTION_MIN}]
+        assert filter_min_salary_punts(pool)[1] == []
+        assert filter_min_salary_punts(
+            [{'name': 'Below Floor', 'salary': PUNT_SALARY_MAX,
+              'projection': PUNT_PROJECTION_MIN - 0.01}])[0] == []
+
+    def test_default_drops_punts_from_pool(self, capsys):
+        draftables = [
+            make_draftable(1, 'Brock Lampe', 'TE', 'BUF', 300),
+            make_draftable(2, 'Travis Kelce', 'TE', 'KC', 5200),
+            make_draftable(3, 'Injury Riser', 'WR', 'KC', 300),
+        ]
+        projections = {
+            1: {'projection': 2.4, 'source': 'dailyfantasyfuel'},
+            2: {'projection': 12.0, 'source': 'dailyfantasyfuel'},
+            3: {'projection': 5.0, 'source': 'dailyfantasyfuel'},
+        }
+        pool = build_player_pool(draftables, projections)
+        assert {p['name'] for p in pool} == {'Travis Kelce', 'Injury Riser'}
+        assert 'Punt ban: dropped 1' in capsys.readouterr().out
+
+    def test_opt_out_keeps_punts(self):
+        draftables = [
+            make_draftable(1, 'Brock Lampe', 'TE', 'BUF', 300),
+            make_draftable(2, 'Travis Kelce', 'TE', 'KC', 5200),
+        ]
+        projections = {1: {'projection': 2.4, 'source': 'fallback'},
+                       2: {'projection': 12.0, 'source': 'fallback'}}
+        pool = build_player_pool(draftables, projections,
+                                 drop_min_salary_punts=False)
+        assert {p['name'] for p in pool} == {'Brock Lampe', 'Travis Kelce'}
+
+    def test_fallback_sourced_punt_also_dropped(self):
+        # The salary curve's ~3-point ghost counts as unprojected too
+        draftables = [make_draftable(1, 'Ghost RB', 'RB', 'KC', 300)]
+        pool = build_player_pool(
+            draftables, {1: {'projection': 3.1, 'source': 'fallback'}})
+        assert pool == []

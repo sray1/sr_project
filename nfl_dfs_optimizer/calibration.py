@@ -27,6 +27,7 @@ import os
 import accuracy_db as db
 
 MIN_N = 30  # graded (source, position) rows required to trust a correction
+SLOPE_MIN_N = 100  # graded rows required to trust a shrinkage slope fit
 
 
 def position_biases():
@@ -133,3 +134,126 @@ def apply_corrections(attached, players, corrections):
             info['projection'] = round(info['projection'] + correction, 2)
             corrected += 1
     return corrected
+
+
+def position_slopes(mode='classic', min_n=SLOPE_MIN_N):
+    """Per-(source, position) OLS fit of actual on projected points.
+
+    The mid-season review found the classic lineup bias (+18.8 pts/lineup)
+    is NOT board bias — matched-row bias is ~±1 per position. It is the
+    winner's curse: the optimizer selects the top of a noisy projection
+    distribution, and selected slots over-project even when the full board
+    is unbiased (classic quintiles run +1.2 actual-vs-proj at the bottom
+    to -1.0 at the top; 9 slots from a 100+ player pool select much harder
+    than showdown's 6 from ~48). Showdown shows no such tilt (small pools,
+    slope fits are noise), so the fit is computed per mode and only the
+    classic pipeline applies it.
+
+    Slope < 1 means projections must shrink toward the position mean:
+    corrected = slope * projected + intercept. Unlike --calibrate's
+    additive per-position bias (near zero here), the shrinkage changes
+    WHICH lineup is optimal — compressing the studs lets mid-priced value
+    players compete for slots.
+
+    Args:
+        mode: 'classic' (the winner's-curse mode) — 'showdown' fits are
+              returned too if requested, but nothing applies them
+        min_n: Gate per (source, position); positions below it are
+               excluded from the result
+
+    Returns:
+        {source: {position: {'slope', 'intercept', 'n'}}} — only gated
+        positions, {} when there is no accuracy DB; fits are per mode
+    """
+    if not os.path.exists(db.DB_PATH):
+        return {}
+    conn = db.get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT sp.source, sp.position, COUNT(*) AS n,
+                   AVG(sp.projected_fppg) AS mp,
+                   AVG(sp.actual_fppg) AS ma,
+                   AVG(sp.projected_fppg * sp.actual_fppg) AS mpa,
+                   AVG(sp.projected_fppg * sp.projected_fppg) AS mpp
+            FROM source_projections sp
+            JOIN contests c ON c.contest_id = sp.contest_id
+            WHERE c.mode = ?
+              AND sp.matched = 1
+              AND sp.actual_fppg IS NOT NULL
+              AND sp.projected_fppg IS NOT NULL
+              AND sp.position IS NOT NULL
+            GROUP BY sp.source, sp.position
+        """, (mode,)).fetchall()
+    finally:
+        conn.close()
+
+    fits = {}
+    for row in rows:
+        if row['n'] < min_n:
+            continue
+        variance = row['mpp'] - row['mp'] * row['mp']
+        if variance <= 0:
+            continue
+        slope = (row['mpa'] - row['mp'] * row['ma']) / variance
+        fits.setdefault(row['source'], {})[row['position']] = {
+            'slope': slope,
+            'intercept': row['ma'] - slope * row['mp'],
+            'n': row['n'],
+        }
+    return fits
+
+
+def load_slope_corrections(mode='classic', min_n=SLOPE_MIN_N, verbose=True):
+    """Trusted shrinkage fits for pool building, printed for inspection.
+
+    Returns:
+        {source: {position: (slope, intercept)}} — apply with
+        apply_pool_shrinkage
+    """
+    fits = position_slopes(mode=mode, min_n=min_n)
+    corrections = {source: {pos: (f['slope'], f['intercept'])
+                            for pos, f in positions.items()}
+                   for source, positions in fits.items()}
+
+    if verbose:
+        if not corrections:
+            print(f"Shrinkage: no trusted {mode} slope fits yet "
+                  f"(need n >= {min_n} graded matched rows per "
+                  f"source-position) — projections unchanged")
+        else:
+            print(f"Classic shrinkage fits from accuracy DB "
+                  f"(winner's-curse correction, n >= {min_n}):")
+            for source, positions in sorted(corrections.items()):
+                parts = [f"{pos} x{slope:.2f}{intercept:+.1f}"
+                         for pos, (slope, intercept) in
+                         sorted(positions.items())]
+                print(f"  {source}: " + ', '.join(parts))
+    return corrections
+
+
+def apply_pool_shrinkage(pool, corrections):
+    """Shrink pool projections toward each position's fitted mean.
+
+    Mutates each pool entry's 'projection' in place where the entry's
+    own (source, position) has a trusted fit: projection =
+    slope * projection + intercept. Entries without a fit (kicker_model
+    rows, csv rows, thin positions) are untouched.
+
+    Args:
+        pool: Player dicts from build_player_pool (position, source)
+        corrections: {source: {position: (slope, intercept)}} from
+                     load_slope_corrections
+
+    Returns:
+        Number of projections shrunk
+    """
+    shrunk = 0
+    for entry in pool:
+        fit = (corrections.get(entry.get('source'), {})
+               .get(entry.get('position')))
+        if fit is None:
+            continue
+        slope, intercept = fit
+        entry['projection'] = round(slope * entry['projection'] + intercept, 2)
+        shrunk += 1
+    return shrunk
