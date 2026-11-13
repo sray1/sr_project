@@ -8,22 +8,31 @@
       "displayName": "New England Patriots",
       "injuries": [
         {"id": "1", "status": "Out",
+         "date": "2026-11-09T20:00Z",
          "athlete": {"displayName": "Kayshon Boutte"}},
         {"id": "2", "status": "Questionable",
+         "date": "2026-11-09T20:00Z",
          "athlete": {"displayName": "Drake Maye"}},
         {"id": "3", "status": "Injured Reserve",
+         "date": "2026-11-09T20:00Z",
          "athlete": {"displayName": "Antonio Gibson"}},
         {"id": "4", "status": "Active",
-         "athlete": {"displayName": "Rhamondre Stevenson"}}
+         "date": "2026-11-09T20:00Z",
+         "athlete": {"displayName": "Rhamondre Stevenson"}},
+        {"id": "5", "status": "Out",
+         "date": "2026-11-01T18:00Z",
+         "athlete": {"displayName": "Ja'Lynn Polk"}}
       ]
     },
     {
       "id": "26",
       "displayName": "Seattle Seahawks",
       "injuries": [
-        {"id": "5", "status": "Doubtful",
+        {"id": "6", "status": "Doubtful",
+         "date": "2026-11-09T20:00Z",
          "athlete": {"displayName": "Zach Charbonnet"}},
-        {"id": "6", "status": "Out",
+        {"id": "7", "status": "Out",
+         "date": "2026-11-09T20:00Z",
          "athlete": {"displayName": "Sam Howell"}}
       ]
     },
@@ -31,7 +40,8 @@
       "id": "28",
       "displayName": "Washington Commanders",
       "injuries": [
-        {"id": "7", "status": "Out",
+        {"id": "8", "status": "Out",
+         "date": "2026-11-09T20:00Z",
          "athlete": {"displayName": "Austin Ekeler"}}
       ]
     }
