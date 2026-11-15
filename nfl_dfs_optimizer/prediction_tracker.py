@@ -73,6 +73,7 @@ def save_snapshot(args):
     drop_nonstarter_kickers = not getattr(args, 'keep_punters', False)
     drop_unprojected_wrs = not getattr(args, 'keep_deep_wrs', False)
     drop_min_salary_punts = not getattr(args, 'keep_punts', False)
+    drop_backup_rbs = not getattr(args, 'keep_backup_rbs', False)
     exclude = build_auto_exclusions(
         draftables, getattr(args, 'exclude', None),
         allow_scrape=not args.no_scrape,
@@ -93,6 +94,7 @@ def save_snapshot(args):
         drop_nonstarter_kickers=drop_nonstarter_kickers,
         drop_unprojected_wrs=drop_unprojected_wrs,
         drop_min_salary_punts=drop_min_salary_punts,
+        drop_backup_rbs=drop_backup_rbs,
         shrink_corrections=shrink_corrections)
 
     if not lineups_by_source:
@@ -121,6 +123,7 @@ def save_snapshot(args):
                                      and source != 'fallback'),
                                  drop_min_salary_punts=(
                                      drop_min_salary_punts),
+                                 drop_backup_rbs=drop_backup_rbs,
                                  exclude=exclude, verbose=False)
         for player in pool:
             db.save_source_projection(contest.contest_id, source, player)
@@ -365,6 +368,9 @@ def parse_args():
                         help="Do NOT auto-drop salary <= $400 skill players "
                              "no projection source gives >= 4 points "
                              "(punt ban; mirrors analyzer.py)")
+    parser.add_argument('--keep-backup-rbs', action='store_true',
+                        help="Do NOT drop backup/3rd-string RBs (RB depth "
+                             "filter; mirrors analyzer.py)")
     parser.add_argument('--no-injury-guard', action='store_true',
                         help="Do NOT exclude players ESPN's official injury "
                              "report lists as Out/IR (mirrors analyzer.py)")

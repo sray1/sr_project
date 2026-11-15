@@ -1,0 +1,53 @@
+{
+  "count": 3,
+  "pageIndex": 1,
+  "pageSize": 25,
+  "pageCount": 1,
+  "items": [
+    {
+      "id": "16",
+      "name": "Base 4-3 D",
+      "positions": {
+        "lde": {
+          "position": {"id": "11", "name": "Left Defensive End",
+                       "displayName": "Left Defensive End",
+                       "abbreviation": "LDE"},
+          "athletes": [{"slot": "11", "rank": 1,
+                        "athlete": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/athletes/90?lang=en&region=us"}}]
+        }
+      }
+    },
+    {
+      "id": "18",
+      "name": "Special Teams"
+    },
+    {
+      "id": "21",
+      "name": "3WR 1TE",
+      "positions": {
+        "qb": {
+          "position": {"id": "8", "name": "Quarterback",
+                       "displayName": "Quarterback",
+                       "abbreviation": "QB"},
+          "athletes": [{"slot": "8", "rank": 1,
+                        "athlete": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/athletes/80?lang=en&region=us"}}]
+        },
+        "rb": {
+          "position": {"id": "10", "name": "Running Back",
+                       "displayName": "Running Back",
+                       "abbreviation": "RB"},
+          "athletes": [
+            {"slot": "11", "rank": 1,
+             "athlete": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/athletes/1?lang=en&region=us"}},
+            {"slot": "11", "rank": 2,
+             "athlete": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/athletes/2?lang=en&region=us"}},
+            {"slot": "11", "rank": 3,
+             "athlete": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/athletes/3?lang=en&region=us"}},
+            {"slot": "11", "rank": 4,
+             "athlete": {"$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/athletes/4?lang=en&region=us"}}
+          ]
+        }
+      }
+    }
+  ]
+}

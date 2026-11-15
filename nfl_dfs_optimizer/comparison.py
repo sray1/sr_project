@@ -41,6 +41,7 @@ def build_lineups_per_source(draftables, source_projections, mode,
                              drop_nonstarter_kickers=False,
                              drop_unprojected_wrs=False,
                              drop_min_salary_punts=True,
+                             drop_backup_rbs=False,
                              shrink_corrections=None):
     """Build the top lineup for each source with the same exact optimizer.
 
@@ -63,6 +64,10 @@ def build_lineups_per_source(draftables, source_projections, mode,
                                   empty its WR pool
         drop_min_salary_punts: Punt-ban pool filter (same as analyzer
                               --keep-punts)
+        drop_backup_rbs: RB depth-chart pool filter (same as analyzer
+                              --keep-backup-rbs); False by default so tests
+                              don't hit the ESPN depth-chart API —
+                              run_comparison and the tracker pass True
         shrink_corrections: Classic winner's-curse shrinkage from
                               calibration.load_slope_corrections - applied
                               to each pool AFTER building (lineups change,
@@ -87,6 +92,7 @@ def build_lineups_per_source(draftables, source_projections, mode,
                                      drop_unprojected_wrs=drop_wrs,
                                      drop_min_salary_punts=(
                                          drop_min_salary_punts),
+                                     drop_backup_rbs=drop_backup_rbs,
                                      exclude=exclude,
                                      verbose=not filter_note_printed)
             filter_note_printed = True
@@ -276,6 +282,7 @@ def run_comparison(args, contest, mode, draftables):
         drop_nonstarter_kickers=not getattr(args, 'keep_punters', False),
         drop_unprojected_wrs=not getattr(args, 'keep_deep_wrs', False),
         drop_min_salary_punts=not getattr(args, 'keep_punts', False),
+        drop_backup_rbs=not getattr(args, 'keep_backup_rbs', False),
         shrink_corrections=shrink_corrections,
         exclude=exclude)
 

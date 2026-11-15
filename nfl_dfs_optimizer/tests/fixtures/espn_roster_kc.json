@@ -1,0 +1,28 @@
+{
+  "athletes": [
+    {
+      "position": "offense",
+      "items": [
+        {"id": 1, "firstName": "Ken", "lastName": "Walker",
+         "position": {"abbreviation": "RB"}},
+        {"id": 2, "firstName": "Emmett", "lastName": "Johnson",
+         "position": {"abbreviation": "RB"}},
+        {"id": 3, "firstName": "Jaydn", "lastName": "Ott",
+         "position": {"abbreviation": "RB"}},
+        {"id": 4, "firstName": "Nate", "lastName": "Carter",
+         "position": {"abbreviation": "RB"}},
+        {"id": 5, "firstName": "Ben", "lastName": "VanSumeren",
+         "position": {"abbreviation": "RB"}},
+        {"id": 80, "firstName": "Patrick", "lastName": "Mahomes",
+         "position": {"abbreviation": "QB"}}
+      ]
+    },
+    {
+      "position": "defense",
+      "items": [
+        {"id": 90, "firstName": "George", "lastName": "Karlaftis",
+         "position": {"abbreviation": "DE"}}
+      ]
+    }
+  ]
+}

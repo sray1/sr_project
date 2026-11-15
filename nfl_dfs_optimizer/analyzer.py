@@ -166,6 +166,7 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
                              drop_unprojected_wrs=not args.keep_deep_wrs,
                              drop_nonstarter_kickers=not args.keep_punters,
                              drop_min_salary_punts=not args.keep_punts,
+                             drop_backup_rbs=not args.keep_backup_rbs,
                              exclude=build_auto_exclusions(
                                  draftables, args.exclude,
                                  allow_scrape=not args.no_scrape,
@@ -284,6 +285,13 @@ def parse_args():
                              "(default: the punt ban is on — season history "
                              "has 6+ straight weeks of $300 punts recording "
                              "literal zeros)")
+    parser.add_argument('--keep-backup-rbs', action='store_true',
+                        help="Do NOT drop backup/3rd-string RBs (default: the "
+                             "RB depth filter is on — a pool RB survives only "
+                             "as a top-2 ESPN depth-chart rank (pool-present) "
+                             "or a top-2 DK salary of his team; the salary-"
+                             "curve fallback prices role-less RBs like "
+                             "starters on thin-board weeks)")
     parser.add_argument('--no-injury-guard', action='store_true',
                         help="Do NOT exclude players ESPN's official injury "
                              "report lists as Out/IR (default: the guard is "

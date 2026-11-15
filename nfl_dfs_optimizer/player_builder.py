@@ -20,6 +20,7 @@ from projections import (get_dff_out_names, get_dff_team_mismatches,
                          normalize_dst_name, normalize_name)
 from injury_guard import espn_injury_exclusions
 from starter_kickers import filter_nonstarter_kickers
+from rb_depth import filter_backup_rbs
 
 MIN_SALARY = 300  # DK NFL minimum salary ($300)
 
@@ -236,7 +237,8 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
                      drop_backup_qbs=True, exclude=None, verbose=True,
                      drop_unprojected_wrs=False,
                      drop_nonstarter_kickers=False,
-                     drop_min_salary_punts=True):
+                     drop_min_salary_punts=True,
+                     drop_backup_rbs=False):
     """Build the deduplicated, projected player pool.
 
     Args:
@@ -270,6 +272,16 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
             punts recorded literal zeros 6+ straight weeks; see
             filter_min_salary_punts). Default True — pass False /
             --keep-punts to keep the cap-relief ghosts.
+        drop_backup_rbs: Drop RBs who are neither top CHART_KEEP ranks
+            on ESPN's depth chart (pool-present ranks only — IR chart
+            entries don't consume a slot) nor top SALARY_KEEP DK
+            salaries of their team (see rb_depth). The salary-curve
+            fallback prices 3rd-string/practice-squad backs like
+            starters on thin-board weeks (week 11: Giddens zero snaps,
+            Ford the No. 4 back — both were built into the optimal
+            classic lineup at real cap cost). Default False (network
+            fetch) — the analyzer/comparison/tracker pipelines pass
+            True; opt out with --keep-backup-rbs.
 
     Returns:
         List of player dicts with:
@@ -346,6 +358,17 @@ def build_player_pool(draftables, player_projections, min_salary=MIN_SALARY,
             print(f"Punt ban: dropped {len(punts)} min-salary players no "
                   f"source projects >= {PUNT_PROJECTION_MIN:.0f} points: "
                   f"{names}")
+
+    if drop_backup_rbs:
+        pool, backup_rbs = filter_backup_rbs(pool)
+        if backup_rbs and verbose:
+            names = ', '.join(f"{p['name']} ({p['team']}, "
+                              f"${p['salary']:,} / {p['projection']:.1f} "
+                              f"proj)" for p in backup_rbs[:8])
+            more = f", +{len(backup_rbs) - 8} more" if len(backup_rbs) > 8 else ''
+            print(f"RB depth filter: dropped {len(backup_rbs)} "
+                  f"3rd-string/backup RBs (kept each team's top-2 chart "
+                  f"ranks + top-2 salaries): {names}{more}")
 
     return pool
 
