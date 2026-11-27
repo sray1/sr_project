@@ -87,6 +87,19 @@ def save_snapshot(args):
         from calibration import load_slope_corrections
         shrink_corrections = load_slope_corrections()
 
+    # Q/D captain guard (analyzer --no-captain-guard mirrors): saved
+    # lineups match the analyzer's recommendations
+    banned_captains = []
+    if (mode == 'showdown'
+            and not getattr(args, 'no_captain_guard', False)):
+        from injury_guard import espn_injury_qd
+        banned_captains = espn_injury_qd(draftables,
+                                         allow_scrape=not args.no_scrape)
+        if banned_captains:
+            names = ', '.join(f"{n} ({t})" for n, t in banned_captains)
+            print(f"Captain guard: {len(banned_captains)} Q/D player(s) "
+                  f"kept out of the captain slot: {names}")
+
     lineups_by_source = build_lineups_per_source(
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
@@ -95,6 +108,8 @@ def save_snapshot(args):
         drop_unprojected_wrs=drop_unprojected_wrs,
         drop_min_salary_punts=drop_min_salary_punts,
         drop_backup_rbs=drop_backup_rbs,
+        thin_board_discount=not getattr(args, 'no_thin_board', False),
+        showdown_banned_captains=banned_captains,
         shrink_corrections=shrink_corrections)
 
     if not lineups_by_source:
@@ -371,6 +386,14 @@ def parse_args():
     parser.add_argument('--keep-backup-rbs', action='store_true',
                         help="Do NOT drop backup/3rd-string RBs (RB depth "
                              "filter; mirrors analyzer.py)")
+    parser.add_argument('--no-thin-board', action='store_true',
+                        help="Opt out of the thin-board discount when "
+                             "building showdown lineups (mirrors "
+                             "analyzer.py)")
+    parser.add_argument('--no-captain-guard', action='store_true',
+                        help="Opt out of the Q/D captain guard when "
+                             "building showdown lineups (mirrors "
+                             "analyzer.py)")
     parser.add_argument('--no-injury-guard', action='store_true',
                         help="Do NOT exclude players ESPN's official injury "
                              "report lists as Out/IR (mirrors analyzer.py)")

@@ -5,8 +5,9 @@ import pytest
 import accuracy_db as db
 import calibration
 from calibration import (apply_corrections, apply_pool_shrinkage,
-                         load_corrections, load_slope_corrections,
-                         position_biases, position_slopes)
+                         apply_thin_board_discount, load_corrections,
+                         load_slope_corrections, position_biases,
+                         position_slopes)
 
 
 @pytest.fixture
@@ -242,3 +243,51 @@ class TestApplyPoolShrinkage:
         pool = self.pool()
         assert apply_pool_shrinkage(pool, {}) == 0
         assert pool[0]['projection'] == 20.0
+
+
+class TestThinBoardDiscount:
+    """Halve salary-curve rows when the board matched < 55% of the pool."""
+
+    def pool(self, real, fallback):
+        entries = ([{'name': f'Real {i}', 'source': 'dailyfantasyfuel',
+                     'projection': 15.0 + i} for i in range(real)]
+                   + [{'name': f'Ghost {i}', 'source': 'fallback',
+                       'projection': 10.0 + i} for i in range(fallback)])
+        entries.append({'name': 'Modeled K', 'source': 'kicker_model',
+                        'projection': 7.91})
+        return entries
+
+    def test_thin_board_scales_fallback_rows(self, capsys):
+        pool = self.pool(real=2, fallback=10)  # 3/13 = 23% real
+        rate, n = apply_thin_board_discount(pool)
+        assert rate == pytest.approx(3 / 13)
+        assert n == 10
+        # curve rows halved; real + kicker-model rows untouched
+        assert pool[0]['projection'] == 15.0
+        assert pool[2]['projection'] == 5.0            # Ghost 0: 10.0 / 2
+        assert pool[-1]['projection'] == 7.91          # kicker_model kept
+        assert 'Thin-board discount' in capsys.readouterr().out
+
+    def test_real_board_noop(self):
+        pool = self.pool(real=8, fallback=2)  # 9/11 = 82% real
+        rate, n = apply_thin_board_discount(pool)
+        assert rate == pytest.approx(9 / 11)
+        assert n == 0
+        assert pool[8]['projection'] == 10.0  # fallback row untouched
+
+    def test_kicker_model_counts_as_real(self):
+        # A pool of ONLY kickers is all model-sourced: no discount
+        pool = [{'name': 'K', 'source': 'kicker_model',
+                 'projection': 7.91}] * 6
+        rate, n = apply_thin_board_discount(pool)
+        assert n == 0
+        assert pool[0]['projection'] == 7.91
+
+    def test_empty_pool(self):
+        assert apply_thin_board_discount([]) == (1.0, 0)
+
+    def test_custom_discount_factor(self):
+        pool = self.pool(real=0, fallback=6)
+        rate, n = apply_thin_board_discount(pool, discount=0.75)
+        assert n == 6
+        assert pool[0]['projection'] == 7.5  # 10.0 * 0.75

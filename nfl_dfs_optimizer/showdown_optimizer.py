@@ -131,7 +131,8 @@ def _solve_lineup(pool, salary_cap, allow_dst_captain=True, banned_lineups=None,
 
 
 def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
-                              allow_dst_captain=True, unique_captains=False):
+                              allow_dst_captain=True, unique_captains=False,
+                              banned_captains=None):
     """Generate the top-N optimal showdown lineups.
 
     Args:
@@ -147,6 +148,11 @@ def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
             (season evidence: the hindsight-optimal captain is rarely the
             chalk QB, so seeing each captain's best build beats near-dupes).
 
+        banned_captains: Player IDs barred from the captain slot in every
+            lineup (the Q/D captain guard — scratched Questionables
+            stay FLEX-eligible but never captain; unique-captains mode
+            adds its own bans on top).
+
     Returns:
         List of lineup dicts sorted by projected total, descending:
             {'captain', 'flex', 'total_projection', 'total_salary',
@@ -154,7 +160,8 @@ def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
     """
     lineups = []
     banned = []
-    used_captains = []
+    initial_bans = list(banned_captains or [])
+    used_captains = list(initial_bans)
 
     for _ in range(n_lineups):
         if unique_captains:
@@ -164,7 +171,8 @@ def generate_showdown_lineups(pool, n_lineups=5, salary_cap=SALARY_CAP,
         else:
             solution = _solve_lineup(pool, salary_cap,
                                      allow_dst_captain=allow_dst_captain,
-                                     banned_lineups=banned)
+                                     banned_lineups=banned,
+                                     banned_captains=initial_bans)
         if solution is None:
             break
 

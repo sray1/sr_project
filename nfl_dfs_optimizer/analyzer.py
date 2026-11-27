@@ -199,11 +199,39 @@ def run_analysis(args, contest=None, mode=None, draftables=None):
             print(f"Shrinkage: {shrunk} pool projections compressed "
                   f"toward their position means")
 
+    # Showdown-only pool refinements:
+    if mode == 'showdown':
+        # Thin-board discount: when the board matched < 55% of the pool,
+        # the salary-curve rows deliver ~half their curve value (fitted
+        # on the season's 8 thin boards — see calibration.py); halving
+        # them pivots the argmax off curve-ghosted studs.
+        if not args.no_thin_board:
+            from calibration import apply_thin_board_discount
+            apply_thin_board_discount(pool)
+
+        # Q/D captain guard: Questionable/Doubtful players stay in the
+        # pool but never captain — the 1.5x multiplies a scratch to a
+        # literal zero (GB@LAR week 12: a Q-tagged Jacobs captained a
+        # build and never dressed).
+        banned = []
+        if not args.no_captain_guard:
+            from injury_guard import espn_injury_qd
+            qd = espn_injury_qd(pool, allow_scrape=not args.no_scrape)
+            banned = [p['player_id'] for p in pool
+                      if (p['name'], p.get('team')) in qd]
+            if banned:
+                names = ', '.join(f"{n} ({t})" for n, t in qd
+                                  if (n, t) in {(p['name'], p.get('team'))
+                                            for p in pool})
+                print(f"Captain guard: {len(banned)} Q/D player(s) kept out "
+                      f"of the captain slot (still FLEX-eligible): {names}")
+
     # Optimize
     if mode == 'showdown':
         lineups = generate_showdown_lineups(
             pool, n_lineups=args.lineups, allow_dst_captain=not args.no_dst_captain,
-            unique_captains=args.unique_captains)
+            unique_captains=args.unique_captains,
+            banned_captains=banned or None)
 
         print(f"\n{'=' * 70}")
         print(f"OPTIMAL SHOWDOWN LINEUPS ({len(lineups)})"
@@ -309,6 +337,17 @@ def parse_args():
                              "builds (default: retro-graded rank "
                              "corrections mark the recommended build — "
                              "see flagship.py)")
+    parser.add_argument('--no-thin-board', action='store_true',
+                        help="Opt out of the thin-board discount (default: "
+                             "when the projection board matches < 55%% of the "
+                             "showdown pool, salary-curve projections are "
+                             "halved — fitted on the season's thin boards, "
+                             "where the curve over-projected by +34 avg)")
+    parser.add_argument('--no-captain-guard', action='store_true',
+                        help="Opt out of the Q/D captain guard (default: "
+                             "Questionable/Doubtful players stay in the pool "
+                             "but never captain — a scratched Q captain "
+                             "multiplies to a literal zero)")
     parser.add_argument('--compare', action='store_true',
                         help="Compare optimal lineups across ALL projection "
                              "sources (DailyFantasyFuel, BlueCollarDFS, CSV, "

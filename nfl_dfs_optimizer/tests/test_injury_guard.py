@@ -8,7 +8,7 @@ import pytest
 
 import injury_guard
 from injury_guard import (espn_injury_exclusions, espn_injury_notes,
-                          fetch_injury_report)
+                          espn_injury_qd, fetch_injury_report)
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures',
                        'espn_injuries.json')
@@ -136,6 +136,26 @@ class TestExclusions:
     def test_no_report_no_exclusions(self):
         assert espn_injury_exclusions(
             [player('Anyone', 'NE')]) == []
+
+
+class TestCaptainGuardQd:
+    def test_qd_players_reported_team_qualified(self, monkeypatch):
+        load_injury_fixture(monkeypatch)
+        slate = [player('Drake Maye', 'NE'),          # Questionable
+                 player('Zach Charbonnet', 'SEA'),     # Doubtful
+                 player('Kayshon Boutte', 'NE'),       # Out -> not Q/D
+                 player('Rhamondre Stevenson', 'NE')]  # Active -> not Q/D
+        assert espn_injury_qd(slate) == [
+            ('Drake Maye', 'NE'),
+            ('Zach Charbonnet', 'SEA'),
+        ]
+
+    def test_out_players_not_qd(self, monkeypatch):
+        load_injury_fixture(monkeypatch)
+        assert espn_injury_qd([player('Kayshon Boutte', 'NE')]) == []
+
+    def test_no_report_no_qd(self):
+        assert espn_injury_qd([player('Anyone', 'NE')]) == []
 
 
 class TestNotes:

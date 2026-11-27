@@ -234,6 +234,28 @@ def espn_injury_exclusions(players, allow_scrape=True):
     return exclusions
 
 
+def espn_injury_qd(players, allow_scrape=True):
+    """Slate players ESPN lists Questionable/Doubtful — captain-guard entries.
+
+    Q/D players stay in the pool (they might play), but their scratch
+    risk makes them poor captain candidates (the 1.5x multiplies a
+    zero: GB @ LAR week 12 captained a Questionable Josh Jacobs who
+    never dressed — the build got 0.00 from the slot). Returns the same
+    (player_name, team) tuple shape as espn_injury_exclusions so
+    callers can map them to pool player_ids uniformly.
+    """
+    report = fetch_injury_report(allow_scrape=allow_scrape)
+    if not report:
+        return []
+    qd = []
+    for player in players:
+        team = _norm_team(player.get('team'))
+        status = report.get(team, {}).get(normalize_name(player['name']))
+        if status in NOTE_STATUSES:
+            qd.append((player['name'], player.get('team')))
+    return qd
+
+
 def espn_injury_notes(players, allow_scrape=True):
     """Slate players with an injury tag, for display only.
 

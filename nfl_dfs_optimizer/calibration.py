@@ -257,3 +257,65 @@ def apply_pool_shrinkage(pool, corrections):
         entry['projection'] = round(slope * entry['projection'] + intercept, 2)
         shrunk += 1
     return shrunk
+
+
+# --- Thin-board discount (showdown) --------------------------------------
+#
+# The salary-curve fallback prices every unlisted player like a
+# league-average starter, which is only honest when the board is thin
+# TEMPORARILY. Season history (nfl_accuracy.db): when DFF matched
+# >= 55% of the slate pool, showdown lineups are unbiased (+6 avg over
+# 27 graded contests, noisy both ways). When DFF matched < 55% — the
+# season's thin boards, n=8 (incl. 2/58, 0/58 and 12/57 weeks) — the
+# DFF optimal lineups over-projected by +34 on average, with the four
+# worst misses of the season (+43 GB-run thin week, +55 GB@LAR with a
+# scratched curve-ghost captain, +60 on an 0%-match slate, +45 CIN@WAS).
+#
+# Least-squares on those 8 contests (sum actual - sum matched-player
+# projections, divided by the fallback-player projection mass) says the
+# curve rows deliver k = 0.50 of their projected value on thin boards
+# — so the discount halves them, which changes the argmax exactly
+# where it must (the GB@LAR chalk loved the curve-ghosted run game at
+# full price; at half price the MILP pivots away).
+#
+# Showdown-only by design: classic thin boards are noisy in both
+# directions (+30 and +3.4 on the two thinnest) and the classic
+# winner's-curse shrinkage already runs there.
+
+THIN_BOARD_MAX_RATE = 0.55  # pool fraction that must be real-board-sourced
+THIN_BOARD_DISCOUNT = 0.50   # fitted multiplier on salary-curve rows
+
+FALLBACK_SOURCES = {'fallback'}  # 'kicker_model' is our own honest flat prior
+
+
+def apply_thin_board_discount(pool, max_rate=THIN_BOARD_MAX_RATE,
+                              discount=THIN_BOARD_DISCOUNT, verbose=True):
+    """Halve salary-curve projections when the board matched too few players.
+
+    The pool's real-board rate is the fraction of entries whose
+    projection came from a scrape/CSV/model (NOT the salary fallback).
+    Below max_rate the fallback rows are scaled by the fitted discount
+    — a no-op at or above the threshold (real boards are unbiased).
+
+    Returns:
+        (real_board_rate, n_discounted)
+    """
+    if not pool:
+        return 1.0, 0
+    real = sum(1 for p in pool if p.get('source') not in FALLBACK_SOURCES)
+    rate = real / len(pool)
+    if rate >= max_rate:
+        return rate, 0
+
+    discounted = 0
+    for entry in pool:
+        if entry.get('source') in FALLBACK_SOURCES:
+            entry['projection'] = round(
+                entry['projection'] * discount, 2)
+            discounted += 1
+    if verbose and discounted:
+        print(f"Thin-board discount: only {real}/{len(pool)} players "
+              f"board-matched ({rate:.0%} < {max_rate:.0%}) — {discounted} "
+              f"salary-curve projections scaled x{discount:.2f} "
+              f"(thin-board curve rows deliver ~half their curve value)")
+    return rate, discounted

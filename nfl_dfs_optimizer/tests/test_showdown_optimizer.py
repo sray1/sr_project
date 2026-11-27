@@ -255,6 +255,47 @@ class TestUniqueCaptains:
                                             unique_captains=True)
         assert len(lineups) == 8  # every player got a captain turn
 
+
+class TestBannedCaptains:
+    """The Q/D captain guard: banned players never captain, still flex."""
+
+    def test_banned_never_captains_unique_mode(self):
+        pool = small_pool()
+        # QB Alpha (pid 1) is the chalk captain — ban him like a Q tag would
+        lineups = generate_showdown_lineups(pool, n_lineups=5,
+                                            unique_captains=True,
+                                            banned_captains=[1])
+        assert lineups, 'lineups must still be feasible'
+        assert all(l['captain']['player_id'] != 1 for l in lineups)
+        for lineup in lineups:
+            assert validate_lineup(lineup) == []
+
+    def test_banned_can_still_flex(self):
+        pool = small_pool()
+        plain = generate_showdown_lineups(pool, n_lineups=1)[0]
+        banned_id = plain['captain']['player_id']
+        lineups = generate_showdown_lineups(pool, n_lineups=1,
+                                            banned_captains=[banned_id])
+        # He was the best player, so the best flex-only build keeps him
+        flex_ids = [p['player_id'] for p in lineups[0]['flex']]
+        assert banned_id in flex_ids
+        assert lineups[0]['captain']['player_id'] != banned_id
+
+    def test_banned_never_captains_normal_mode(self):
+        pool = small_pool()
+        lineups = generate_showdown_lineups(pool, n_lineups=3,
+                                            banned_captains=[1])
+        assert all(l['captain']['player_id'] != 1 for l in lineups)
+        for lineup in lineups:
+            assert validate_lineup(lineup) == []
+
+    def test_no_bans_unchanged(self):
+        pool = small_pool()
+        guarded = generate_showdown_lineups(pool, n_lineups=3,
+                                            banned_captains=None)
+        plain = generate_showdown_lineups(pool, n_lineups=3)
+        assert guarded == plain
+
     def test_dst_captain_respected(self):
         pool = small_pool() + [
             make_player(99, 'KC DST', 'KC', 3500, 9.0, positions=('DST', 'FLEX')),

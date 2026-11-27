@@ -42,6 +42,8 @@ def build_lineups_per_source(draftables, source_projections, mode,
                              drop_unprojected_wrs=False,
                              drop_min_salary_punts=True,
                              drop_backup_rbs=False,
+                             thin_board_discount=True,
+                             showdown_banned_captains=None,
                              shrink_corrections=None):
     """Build the top lineup for each source with the same exact optimizer.
 
@@ -68,6 +70,14 @@ def build_lineups_per_source(draftables, source_projections, mode,
                               --keep-backup-rbs); False by default so tests
                               don't hit the ESPN depth-chart API —
                               run_comparison and the tracker pass True
+        thin_board_discount: Halve salary-curve projections when the
+                              board matched < 55% of the pool (showdown
+                              only; the fallback 'source' is exempt — it
+                              IS the curve and stays the raw yardstick)
+        showdown_banned_captains: (name, team) tuples barred from the
+                              captain slot — the Q/D captain guard from
+                              analyzer --no-captain-guard, mapped to each
+                              pool's player_ids here
         shrink_corrections: Classic winner's-curse shrinkage from
                               calibration.load_slope_corrections - applied
                               to each pool AFTER building (lineups change,
@@ -80,6 +90,7 @@ def build_lineups_per_source(draftables, source_projections, mode,
     """
     lineups_by_source = {}
     filter_note_printed = False  # print pool-filter drops once, not per source
+    discount_note_printed = False
     for source, projections in source_projections.items():
         # Real sources drop fallback-only ghost WRs; the fallback 'source'
         # projects every WR by construction, so the filter is skipped for it
@@ -100,8 +111,20 @@ def build_lineups_per_source(draftables, source_projections, mode,
                 from calibration import apply_pool_shrinkage
                 apply_pool_shrinkage(pool, shrink_corrections)
             if mode == 'showdown':
+                # Thin-board discount: real sources only — the fallback
+                # 'source' IS the curve (its pool would be 100% fallback),
+                # and it stays the uncorrected yardstick
+                if thin_board_discount and source != 'fallback':
+                    from calibration import apply_thin_board_discount
+                    apply_thin_board_discount(
+                        pool, verbose=not discount_note_printed)
+                    discount_note_printed = True
+                banned = [p['player_id'] for p in pool
+                          if (p['name'], p.get('team'))
+                          in (showdown_banned_captains or [])]
                 lineups = generate_showdown_lineups(
-                    pool, n_lineups=1, allow_dst_captain=allow_dst_captain)
+                    pool, n_lineups=1, allow_dst_captain=allow_dst_captain,
+                    banned_captains=banned or None)
             else:
                 pydfs_players = build_pydfs_players(pool)
                 lineups = [lineup_to_dict(l) for l in generate_classic_lineups(
@@ -275,6 +298,19 @@ def run_comparison(args, contest, mode, draftables):
         from calibration import load_slope_corrections
         shrink_corrections = load_slope_corrections()
 
+    # Q/D captain guard (analyzer --no-captain-guard opts out): slate
+    # players ESPN lists Questionable/Doubtful never captain
+    banned_captains = []
+    if (mode == 'showdown'
+            and not getattr(args, 'no_captain_guard', False)):
+        from injury_guard import espn_injury_qd
+        banned_captains = espn_injury_qd(draftables,
+                                         allow_scrape=not args.no_scrape)
+        if banned_captains:
+            names = ', '.join(f"{n} ({t})" for n, t in banned_captains)
+            print(f"Captain guard: {len(banned_captains)} Q/D player(s) "
+                  f"kept out of the captain slot: {names}")
+
     lineups_by_source = build_lineups_per_source(
         draftables, source_projections, mode,
         stack_rule=args.stack, allow_dst_captain=not args.no_dst_captain,
@@ -283,6 +319,8 @@ def run_comparison(args, contest, mode, draftables):
         drop_unprojected_wrs=not getattr(args, 'keep_deep_wrs', False),
         drop_min_salary_punts=not getattr(args, 'keep_punts', False),
         drop_backup_rbs=not getattr(args, 'keep_backup_rbs', False),
+        thin_board_discount=not getattr(args, 'no_thin_board', False),
+        showdown_banned_captains=banned_captains,
         shrink_corrections=shrink_corrections,
         exclude=exclude)
 
