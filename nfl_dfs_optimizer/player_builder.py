@@ -39,12 +39,17 @@ PUNT_PROJECTION_MIN = 4.0
 
 
 def filter_backup_qbs(pool):
-    """Drop backup QBs: keep only each team's top-salaried QB (ties kept).
+    """Drop backup QBs: keep only each team's top-salaried QB.
 
     DK draftables have no starter/backup flag, but DK prices the expected
     starter well above the backups (e.g. NE @ SEA: Maye $10,000 vs DeVito
     $8,000 / Morton $6,000). Showdown has no position constraints, so
     without this filter the MILP happily stacks a team's backup QBs.
+
+    Salary ties (DEN @ PIT week 13: Rudolph, Allar and Howard ALL listed
+    at $6,000 while the QB room was in flux) keep ONE QB — the highest
+    projected of the tied names — rather than letting the MILP stack
+    three QBs from one team, two of which are guaranteed zeros.
 
     Returns:
         (kept, dropped) pool entries
@@ -56,12 +61,28 @@ def filter_backup_qbs(pool):
             max_qb_salary[team] = max(max_qb_salary.get(team, 0),
                                       entry.get('salary') or 0)
 
+    # Of the (possibly tied) top-salaried QBs per team, keep only the
+    # highest-projected one; the rest are backups
+    qb_by_team = {}
+    for entry in pool:
+        if ('QB' in (entry.get('positions') or [])
+                and (entry.get('salary') or 0)
+                == max_qb_salary.get(entry.get('team'), 0)):
+            qb_by_team.setdefault(entry.get('team'), []).append(entry)
+    kept_tied = set()
+    for team, qbs in qb_by_team.items():
+        kept_tied.add(id(max(qbs, key=lambda q: (q.get('projection') or 0,
+                                                 q['name']))))
+
     kept, dropped = [], []
     for entry in pool:
-        is_backup_qb = ('QB' in (entry.get('positions') or [])
-                        and (entry.get('salary') or 0)
-                        < max_qb_salary.get(entry.get('team'), 0))
-        (dropped if is_backup_qb else kept).append(entry)
+        if 'QB' not in (entry.get('positions') or []):
+            kept.append(entry)
+            continue
+        is_backup = ((entry.get('salary') or 0)
+                     < max_qb_salary.get(entry.get('team'), 0)
+                     or id(entry) not in kept_tied)
+        (dropped if is_backup else kept).append(entry)
     return kept, dropped
 
 

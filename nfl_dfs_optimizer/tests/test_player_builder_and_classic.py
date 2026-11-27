@@ -262,14 +262,30 @@ class TestBackupPlayerFilters:
         pool = build_player_pool(draftables, projections, drop_backup_qbs=False)
         assert len(pool) == 6  # nothing dropped
 
-    def test_tied_qb_salary_keeps_both(self):
-        # Can't tell a true QB controversy apart — keep both
+    def test_tied_qb_salary_keeps_one_best_projected(self):
+        # A salary tie (DEN @ PIT week 13: Rudolph/Allar/Howard all $6,000)
+        # keeps ONE name — the highest projected. Keeping all tied QBs let
+        # the MILP stack 2-3 QBs from one team, all but one guaranteed zeros.
+        draftables = [
+            make_draftable(1, 'QB A', 'QB', 'NE', 9000),
+            make_draftable(2, 'QB B', 'QB', 'NE', 9000),
+            make_draftable(3, 'QB C', 'QB', 'NE', 9000),
+        ]
+        projections = {1: {'projection': 8.0, 'source': 'fallback'},
+                       2: {'projection': 12.0, 'source': 'fallback'},
+                       3: {'projection': 10.0, 'source': 'fallback'}}
+        pool = build_player_pool(draftables, projections)
+        assert {p['name'] for p in pool} == {'QB B'}
+
+    def test_tied_qb_salary_keeps_higher_projection(self):
+        # Tie on salary, not on projection: the better-projected QB stays
+        # (make_projections gives pid+base: QB A -> 11.0, QB B -> 12.0)
         draftables = [
             make_draftable(1, 'QB A', 'QB', 'NE', 9000),
             make_draftable(2, 'QB B', 'QB', 'NE', 9000),
         ]
         pool = build_player_pool(draftables, make_projections([1, 2]))
-        assert len(pool) == 2
+        assert {p['name'] for p in pool} == {'QB B'}
 
     def test_non_qb_positions_untouched(self):
         # Backup RBs/WRs are legitimately playable — only QBs are filtered
